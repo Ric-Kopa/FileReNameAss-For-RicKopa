@@ -29,7 +29,7 @@ import time
 from dataclasses import dataclass, field
 
 #: 版本号（界面标题和“关于”里显示）
-APP_VERSION = "2.5.1"
+APP_VERSION = "2.5.2"
 
 #: 默认要删除的字符
 DEFAULT_STRIP_CHARS = "-+_"

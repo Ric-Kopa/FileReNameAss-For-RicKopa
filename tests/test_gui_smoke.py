@@ -240,6 +240,12 @@ class ExportFlowTest(unittest.TestCase):
         app.after(300, close)
         self.assertIsNone(app._ask_export("2517970408", [], []))
 
+    def test_probe_write_detects_unwritable_folder(self):
+        ok_dir = os.path.join(self.tmp, "ok")
+        self.assertIsNone(app_module.App._probe_write(ok_dir))
+        blocked = os.path.join("C:\\Windows\\System32", "dsh_no_such_dir")
+        self.assertIsNotNone(app_module.App._probe_write(blocked))
+
     def test_export_copy_flow_writes_renamed_file(self):
         out = os.path.join(self.tmp, "out")
         self._patch("main.messagebox.askyesno", lambda *a, **k: False)

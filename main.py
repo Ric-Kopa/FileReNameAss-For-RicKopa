@@ -605,7 +605,8 @@ class App(tk.Tk):
         if not plans:
             messagebox.showinfo("提示", "没有可改名的文件：文件名开头要带学号")
             return
-        if not self._check_writable(folder):
+        folder = self._ensure_writable(folder)
+        if not folder:
             return
         failures: list = []
         done = export_files(plans, folder, copy=copy, errors=failures)
@@ -624,25 +625,51 @@ class App(tk.Tk):
                 f"{verb} {len(done)} 个文件到：\n{folder}\n\n{preview}\n\n要打开文件夹吗？"):
             self._open_folder(folder)
 
-    def _check_writable(self, folder: str) -> bool:
-        """导出前先试试能不能在这个文件夹里写东西，避免导到一半才报错。"""
+    def _ensure_writable(self, folder: str) -> str:
+        """确认目标文件夹能写；写不了就给出原因，并可以改用程序所在文件夹。
+
+        返回可用的文件夹路径，用户放弃时返回空字符串。
+        """
+        problem = self._probe_write(folder)
+        if not problem:
+            return folder
+
+        fallback = os.path.join(_app_dir(), "导出")
+        can_fallback = self._probe_write(fallback) is None
+        detail = f"{folder}\n\n{problem}\n\n"
+        if can_fallback:
+            detail += (f"这个文件夹多半被安全软件（火绒 / 联想电脑管家）的「文档保护」"
+                       f"拦住了：未信任的程序只能写自己的文件夹。\n\n"
+                       f"要直接写桌面 / 文档，请把「{os.path.basename(sys.executable)}」"
+                       f"加入杀毒软件的信任区；\n"
+                       f"或者现在先导出到程序旁边的文件夹：\n{fallback}")
+            if messagebox.askyesno("这个文件夹写不进去", detail + "\n\n要改用上面这个文件夹吗？"):
+                return fallback
+            return ""
+        messagebox.showerror("无法写入这个文件夹",
+                             detail
+                             + "常见原因：\n"
+                               "· 安全软件（火绒 / 联想电脑管家）的文档保护拦住了本程序；\n"
+                               "· 文件夹是只读的，或当前账户没有写权限；\n"
+                               "· 文件夹在 OneDrive / 网盘里，正在同步或被占用。\n\n"
+                               "建议换个文件夹，或把本程序加入杀毒软件信任区。")
+        return ""
+
+    @staticmethod
+    def _probe_write(folder: str) -> str | None:
+        """试着在文件夹里写一个临时文件；能写返回 None，否则返回原因。"""
         try:
             os.makedirs(folder, exist_ok=True)
-            probe = os.path.join(folder, ".write_test.tmp")
+        except OSError as e:
+            return f"{type(e).__name__}: {e}"
+        probe = os.path.join(folder, ".write_test.tmp")
+        try:
             with open(probe, "w", encoding="utf-8") as f:
                 f.write("ok")
             os.remove(probe)
-            return True
+            return None
         except OSError as e:
-            messagebox.showerror(
-                "无法写入这个文件夹",
-                f"{folder}\n\n{e}\n\n"
-                "常见原因：\n"
-                "· 文件夹被设为只读，或当前账户没有写权限；\n"
-                "· 文件夹在 OneDrive / 网盘里，正在同步或被占用；\n"
-                "· Windows「受控文件夹访问」拦住了这个程序。\n\n"
-                "换个文件夹试试，比如：源文件夹下新建「已处理」。")
-            return False
+            return f"{type(e).__name__}: {e}"
 
     def _report_failures(self, failures, folder: str, *, copy: bool, done: int):
         lines = []
@@ -658,7 +685,8 @@ class App(tk.Tk):
         messagebox.showwarning("部分文件没有导出", head + "\n".join(lines) + more + tips)
 
     def _save_list(self, result, folder):
-        if not self._check_writable(folder):
+        folder = self._ensure_writable(folder)
+        if not folder:
             return
         path = os.path.join(folder, "学号处理结果.txt")
         if os.path.exists(path) and not messagebox.askyesno("文件已存在", f"{path}\n\n要覆盖吗？"):
