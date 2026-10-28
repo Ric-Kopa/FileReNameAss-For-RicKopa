@@ -6,8 +6,10 @@
 """
 
 import os
+import shutil
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -192,3 +194,59 @@ class GuiSmokeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExportFlowTest(unittest.TestCase):
+    """“保存/导出”对话框与导出重命名后的文件。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = app_module.App()
+        cls.app.withdraw()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.app.destroy()
+
+    def setUp(self):
+        self.tmp = os.path.join(os.path.dirname(__file__), "_export_case")
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        os.makedirs(self.tmp)
+        self.src = os.path.join(self.tmp, "25179704-08-何金森-作业一.doc")
+        with open(self.src, "wb") as f:
+            f.write(b"x")
+        self.app.file_paths = [self.src]
+        self.patches = []
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _patch(self, target, value):
+        p = mock.patch(target, value)
+        self.patches.append(p)
+        p.start()
+        return p
+
+    def test_export_dialog_can_be_opened_and_closed(self):
+        app = self.app
+
+        def close():
+            for child in app.winfo_children():
+                if isinstance(child, tk.Toplevel):
+                    child.destroy()
+
+        app.after(300, close)
+        self.assertIsNone(app._ask_export("2517970408", [], []))
+
+    def test_export_copy_flow_writes_renamed_file(self):
+        out = os.path.join(self.tmp, "out")
+        self._patch("main.messagebox.askyesno", lambda *a, **k: False)
+        self._patch("main.messagebox.showinfo", lambda *a, **k: None)
+        self._patch("main.messagebox.showwarning", lambda *a, **k: None)
+        plan = [(self.src, "2517970408 何金森 作业一.doc")]
+        self._patch("main.App._ask_export", lambda *a, **k: {"action": "copy", "folder": out})
+        self.app.do_save()
+        self.assertEqual(sorted(os.listdir(out)), ["2517970408 何金森 作业一.doc"])
+        self.assertTrue(os.path.exists(self.src))

@@ -24,10 +24,11 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from dataclasses import dataclass, field
 
 #: 版本号（界面标题和“关于”里显示）
-APP_VERSION = "2.4"
+APP_VERSION = "2.5"
 
 #: 默认要删除的字符
 DEFAULT_STRIP_CHARS = "-+_"
@@ -493,3 +494,66 @@ def read_paths(paths, *, recursive: bool = True, from_names: bool = True,
 
     bundle.text = "\n".join(chunks)
     return bundle
+
+def plan_renames(paths, class_no: str = "4", *,
+                 fmt: str = NAME_FORMAT_SPLIT) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """算出每个文件改学号后的新文件名。
+
+    返回 ``(可改名的 [(源路径, 新文件名)], 跳过的 [(路径, 原因)])``。
+    扩展名一律保留；``fmt=split`` 时学号后面的分隔符换成空格。
+    """
+    plans: list[tuple[str, str]] = []
+    skipped: list[tuple[str, str]] = []
+    for raw in paths:
+        path = os.path.abspath(str(raw))
+        stem, ext = os.path.splitext(os.path.basename(path))
+        matched = _match_name_id(stem)
+        if not matched:
+            skipped.append((path, "文件名开头没有学号"))
+            continue
+        digits, rest = matched
+        fixed = fix_student_id(digits, class_no)
+        if fmt == NAME_FORMAT_SPLIT:
+            tail = _split_rest(rest)
+            new_stem = f"{fixed} {tail}".strip()
+        else:
+            new_stem = f"{fixed}{rest}"
+        plans.append((path, f"{new_stem}{ext}"))
+    return plans, skipped
+
+
+def export_files(plans, target_dir: str, *, copy: bool = True) -> list[tuple[str, str]]:
+    """按 ``plan_renames`` 的结果复制（或直接重命名）文件，返回 ``[(源, 目标)]``。
+
+    目标已有同名文件时自动加 `` (2)`` `` (3)`` 后缀，不会覆盖别人的文件。
+    """
+    target_dir = os.path.abspath(target_dir)
+    os.makedirs(target_dir, exist_ok=True)
+    used: set[str] = set()
+    done: list[tuple[str, str]] = []
+    for src, new_name in plans:
+        src = os.path.abspath(src)
+        stem, ext = os.path.splitext(new_name)
+        candidate = new_name
+        index = 2
+        while True:
+            dest = os.path.join(target_dir, candidate)
+            same = os.path.abspath(dest) == src
+            taken = candidate.lower() in used or (os.path.exists(dest) and not same)
+            if not taken:
+                break
+            candidate = f"{stem} ({index}){ext}"
+            index += 1
+        dest = os.path.join(target_dir, candidate)
+        if os.path.abspath(dest) == src:
+            done.append((src, dest))       # 名字本来就对，什么都不用做
+            used.add(candidate.lower())
+            continue
+        if copy:
+            shutil.copy2(src, dest)
+        else:
+            os.replace(src, dest)
+        used.add(candidate.lower())
+        done.append((src, dest))
+    return done
+

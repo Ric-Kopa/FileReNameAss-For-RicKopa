@@ -11,7 +11,9 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from student_id_core import (  # noqa: E402
+from student_id_core import (
+    export_files,
+    plan_renames,  # noqa: E402
     DEFAULT_STRIP_CHARS,
     NAME_FORMAT_KEEP,
     NAME_FORMAT_NOEXT,
@@ -431,3 +433,64 @@ class ReadPathsFormatTest(unittest.TestCase):
         finally:
             shutil.rmtree(folder, ignore_errors=True)
 
+
+
+class PlanRenamesTest(unittest.TestCase):
+    """导出重命名后的文件：计划与落地。"""
+
+    def setUp(self):
+        self.dir = os.path.join(os.path.dirname(__file__), "_rename_case")
+        shutil.rmtree(self.dir, ignore_errors=True)
+        os.makedirs(self.dir)
+        self.names = ["25179704-08-何金森-作业一.doc", "202404041-张三.docx", "扫描件.pdf"]
+        self.paths = []
+        for name in self.names:
+            path = os.path.join(self.dir, name)
+            with open(path, "wb") as f:
+                f.write(b"x")
+            self.paths.append(path)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_plan_keeps_extension_and_tail(self):
+        plans, skipped = plan_renames(self.paths)
+        mapping = {os.path.basename(src): new for src, new in plans}
+        self.assertEqual(mapping["25179704-08-何金森-作业一.doc"],
+                         "2517970408 何金森 作业一.doc")
+        self.assertEqual(mapping["202404041-张三.docx"], "2024040401 张三.docx")
+        self.assertEqual([os.path.basename(p) for p, _ in skipped], ["扫描件.pdf"])
+
+    def test_plan_keep_format_keeps_separator(self):
+        plans, _ = plan_renames(self.paths, fmt=NAME_FORMAT_KEEP)
+        mapping = {os.path.basename(src): new for src, new in plans}
+        self.assertEqual(mapping["25179704-08-何金森-作业一.doc"],
+                         "2517970408-何金森-作业一.doc")
+
+    def test_export_copy_creates_new_files(self):
+        plans, _ = plan_renames(self.paths)
+        out = os.path.join(self.dir, "out")
+        done = export_files(plans, out)
+        self.assertEqual(len(done), 2)
+        self.assertEqual(sorted(os.listdir(out)),
+                         sorted(["2517970408 何金森 作业一.doc", "2024040401 张三.docx"]))
+        # 源文件还在
+        self.assertTrue(os.path.exists(self.paths[0]))
+
+    def test_export_does_not_overwrite_existing(self):
+        plans, _ = plan_renames(self.paths[:1])
+        out = os.path.join(self.dir, "out")
+        os.makedirs(out)
+        with open(os.path.join(out, "2517970408 何金森 作业一.doc"), "wb") as f:
+            f.write(b"old")
+        done = export_files(plans, out)
+        self.assertEqual(os.path.basename(done[0][1]), "2517970408 何金森 作业一 (2).doc")
+        with open(os.path.join(out, "2517970408 何金森 作业一.doc"), "rb") as f:
+            self.assertEqual(f.read(), b"old")
+
+    def test_export_renames_in_place(self):
+        plans, _ = plan_renames(self.paths[:1])
+        export_files(plans, self.dir, copy=False)
+        self.assertFalse(os.path.exists(self.paths[0]))
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "2517970408 何金森 作业一.doc")))
+        self.assertTrue(os.path.exists(self.paths[2]))   # 无关文件不受影响

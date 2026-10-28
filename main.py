@@ -24,8 +24,11 @@ from student_id_core import (
     DEFAULT_STRIP_CHARS,
     NAME_FORMATS,
     NAME_FORMAT_SPLIT,
+    NAME_FORMAT_KEEP,
     ProcessResult,
+    export_files,
     is_valid_class_no,
+    plan_renames,
     process_text,
     read_paths,
     read_text_file,
@@ -94,6 +97,7 @@ class App(tk.Tk):
         self.save_mode_var = tk.StringVar(value="source")
         # 最近一次导入所在的文件夹（“保存到源文件夹”用）
         self.source_dir = ""
+        self.file_paths = []          # 最近一次导入的文件，供“导出重命名后的文件”用
 
         self._setup_style()
         self.title(f"{APP_TITLE} v{APP_VERSION}")
@@ -143,7 +147,7 @@ class App(tk.Tk):
         file_menu.add_command(label="导入文件…（可多选）", accelerator="Ctrl+O", command=self.do_import)
         file_menu.add_command(label="导入文件夹…", accelerator="Ctrl+Shift+O",
                               command=self.do_import_folder)
-        file_menu.add_command(label="保存结果…", accelerator="Ctrl+S", command=self.do_save)
+        file_menu.add_command(label="保存 / 导出…", accelerator="Ctrl+S", command=self.do_save)
         file_menu.add_separator()
         file_menu.add_command(label="退出", command=self.on_close)
         menubar.add_cascade(label="文件", menu=file_menu)
@@ -274,7 +278,7 @@ class App(tk.Tk):
                    command=self.do_fix).pack(side="left", padx=6)
         ttk.Button(bar, text="仅清理字符", command=self.do_clean).pack(side="left")
         ttk.Button(bar, text="复制结果", command=self.do_copy).pack(side="left", padx=6)
-        ttk.Button(bar, text="保存结果", command=self.do_save).pack(side="left")
+        ttk.Button(bar, text="保存/导出…", command=self.do_save).pack(side="left")
         ttk.Button(bar, text="清空", command=self.do_clear).pack(side="left", padx=6)
 
     def _build_status(self):
@@ -439,6 +443,7 @@ class App(tk.Tk):
                             class_no=opts.get("class_no", "4"))
         if bundle.source_dir:
             self.source_dir = bundle.source_dir
+        self.file_paths = list(bundle.files) + list(bundle.names)
         if not bundle.text.strip():
             names = "、".join(os.path.basename(str(p)) for p in list(paths)[:3])
             message = "没有找到可读取的学号。"
@@ -486,46 +491,152 @@ class App(tk.Tk):
         self.set_status(f"已复制到剪贴板（{len(result.splitlines())} 行）")
 
     def do_save(self):
+        """保存 / 导出：学号清单 txt，或重命名后的文件。"""
         result = self.out_text.get("1.0", "end-1c")
-        if not result.strip():
-            messagebox.showinfo("提示", "还没有结果可保存")
+        class_no = (self._read_options(need_class=False) or {}).get("class_no", "4")
+        plans, skipped = [], []
+        if self.file_paths:
+            plans, skipped = plan_renames(
+                self.file_paths, class_no,
+                fmt=NAME_FORMAT_BY_LABEL.get(self.name_format_var.get(), NAME_FORMAT_SPLIT))
+        choice = self._ask_export(result, plans, skipped)
+        if not choice:
             return
+        if choice["action"] == "txt":
+            self._save_list(result, choice["folder"])
+        else:
+            self._export_renamed(plans, choice["folder"], copy=choice["action"] == "copy")
 
+    def _ask_export(self, result, plans, skipped):
+        """弹窗问：输出清单 txt，还是输出改好名的文件。返回 dict 或 None。"""
+        has_text = bool(result.strip())
+        has_files = bool(plans)
+        if not has_text and not has_files:
+            messagebox.showinfo("提示", "还没有结果可保存")
+            return None
+
+        dlg = tk.Toplevel(self)
+        dlg.title("保存 / 导出")
+        dlg.transient(self)
+        dlg.resizable(False, False)
+        body = ttk.Frame(dlg, padding=(16, 12))
+        body.pack(fill="both", expand=True)
+
+        action = tk.StringVar(value="copy" if has_files else "txt")
+
+        ttk.Label(body, text="要输出什么？",
+                  font=("Microsoft YaHei UI", 10, "bold")).pack(anchor="w", pady=(0, 6))
+
+        def add_radio(value, text, hint, enabled=True):
+            row = ttk.Frame(body)
+            row.pack(fill="x", pady=(0, 4))
+            btn = ttk.Radiobutton(row, text=text, value=value, variable=action)
+            btn.pack(side="left")
+            if not enabled:
+                btn.state(["disabled"])
+            ttk.Label(row, text=hint, style="Hint.TLabel").pack(side="left", padx=(8, 0))
+
+        add_radio("copy", "重命名后的文件（复制）",
+                  f"{len(plans)} 个文件 → 复制到目标文件夹，原文件不动", has_files)
+        add_radio("rename", "重命名后的文件（直接改源文件）",
+                  "在源文件夹里改名，不可撤销", has_files)
+        add_radio("txt", "学号清单 学号处理结果.txt",
+                  "只有学号文本清单", has_text)
+        if skipped:
+            ttk.Label(body, text=f"另有 {len(skipped)} 个文件文件名里没有学号，会被跳过",
+                      style="Hint.TLabel").pack(anchor="w", pady=(0, 6))
+
+        ttk.Separator(body, orient="horizontal").pack(fill="x", pady=(6, 8))
+
+        ttk.Label(body, text="目标文件夹：").pack(anchor="w")
+        folder_row = ttk.Frame(body)
+        folder_row.pack(fill="x", pady=(2, 0))
+        folder_var = tk.StringVar(value=self._default_folder())
+        folder_entry = ttk.Entry(folder_row, textvariable=folder_var, width=52)
+        folder_entry.pack(side="left", fill="x", expand=True)
+
+        def browse():
+            picked = filedialog.askdirectory(title="选择目标文件夹",
+                                             initialdir=folder_var.get() or None)
+            if picked:
+                folder_var.set(picked)
+
+        ttk.Button(folder_row, text="浏览…", command=browse).pack(side="left", padx=(6, 0))
+
+        result_box = {}
+
+        def confirm():
+            act = action.get()
+            folder = folder_var.get().strip()
+            if act in ("copy", "txt") and not folder:
+                messagebox.showwarning("提示", "请选择目标文件夹", parent=dlg)
+                return
+            if act == "rename":
+                folder = self.source_dir or folder
+            result_box.update(action=act, folder=folder)
+            dlg.destroy()
+
+        buttons = ttk.Frame(body)
+        buttons.pack(fill="x", pady=(12, 0))
+        ttk.Button(buttons, text="取消", command=dlg.destroy).pack(side="right")
+        ttk.Button(buttons, text="开始", style="Primary.TButton",
+                   command=confirm).pack(side="right", padx=(0, 6))
+
+        dlg.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() - dlg.winfo_width()) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - dlg.winfo_height()) // 3
+        dlg.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        dlg.grab_set()
+        dlg.wait_window()
+        return result_box or None
+
+    def _default_folder(self):
         mode = self.save_mode_var.get()
         if mode == "choose":
-            initial = self.source_dir or os.path.expanduser("~")
-            path = filedialog.asksaveasfilename(
-                title="保存结果",
-                initialdir=initial,
-                defaultextension=".txt",
-                initialfile="学号处理结果.txt",
-                filetypes=[("文本文件", "*.txt"), ("CSV 文件", "*.csv"), ("所有文件", "*.*")])
-            if not path:
-                return
-        else:
-            target_dir = self._save_dir(mode)
-            if not target_dir:
-                return
-            try:
-                os.makedirs(target_dir, exist_ok=True)
-            except OSError as e:
-                messagebox.showerror("保存失败", f"无法创建文件夹：\n{target_dir}\n\n{e}")
-                return
-            path = os.path.join(target_dir, "学号处理结果.txt")
-            if os.path.exists(path) and not messagebox.askyesno(
-                    "文件已存在", f"{path}\n\n要覆盖吗？"):
-                return
+            return self.source_dir or os.path.expanduser("~")
+        base = self.source_dir
+        if not base or not os.path.isdir(base):
+            return os.path.expanduser("~")
+        if mode == "subfolder":
+            return os.path.join(base, f"{os.path.basename(base)}-已处理")
+        return base
 
+    def _export_renamed(self, plans, folder, *, copy: bool):
+        if not plans:
+            messagebox.showinfo("提示", "没有可改名的文件：文件名开头要带学号")
+            return
         try:
-            # utf-8-sig：Excel 直接打开不乱码，普通编辑器也正常
+            done = export_files(plans, folder, copy=copy)
+        except OSError as e:
+            messagebox.showerror("导出失败", str(e))
+            return
+        verb = "已复制" if copy else "已重命名"
+        self.set_status(f"{verb} {len(done)} 个文件 → {folder}")
+        preview = "\n".join(f"{os.path.basename(a)}  →  {os.path.basename(b)}"
+                            for a, b in done[:8])
+        if len(done) > 8:
+            preview += f"\n… 其余 {len(done) - 8} 个"
+        if messagebox.askyesno(
+                "完成",
+                f"{verb} {len(done)} 个文件到：\n{folder}\n\n{preview}\n\n要打开文件夹吗？"):
+            self._open_folder(folder)
+
+    def _save_list(self, result, folder):
+        path = os.path.join(folder, "学号处理结果.txt")
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except OSError as e:
+            messagebox.showerror("保存失败", f"无法创建文件夹：\n{folder}\n\n{e}")
+            return
+        if os.path.exists(path) and not messagebox.askyesno("文件已存在", f"{path}\n\n要覆盖吗？"):
+            return
+        try:
             with open(path, "w", encoding="utf-8-sig", newline="\n") as f:
                 f.write(result.rstrip() + "\n")
         except OSError as e:
             messagebox.showerror("保存失败", str(e))
             return
-
         self.set_status(f"已保存：{path}")
-        folder = os.path.dirname(path)
         if messagebox.askyesno("完成", f"已保存到：\n{path}\n\n要打开所在文件夹吗？"):
             self._open_folder(folder)
 
