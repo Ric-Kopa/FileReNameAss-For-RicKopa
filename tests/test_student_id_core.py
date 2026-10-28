@@ -494,3 +494,35 @@ class PlanRenamesTest(unittest.TestCase):
         self.assertFalse(os.path.exists(self.paths[0]))
         self.assertTrue(os.path.exists(os.path.join(self.dir, "2517970408 何金森 作业一.doc")))
         self.assertTrue(os.path.exists(self.paths[2]))   # 无关文件不受影响
+
+
+class ExportFailureTest(unittest.TestCase):
+    """单个文件失败不要中断整批。"""
+
+    def setUp(self):
+        self.dir = os.path.join(os.path.dirname(__file__), "_export_fail")
+        shutil.rmtree(self.dir, ignore_errors=True)
+        os.makedirs(self.dir)
+        self.src = os.path.join(self.dir, "25179704-08-何金森-作业一.doc")
+        with open(self.src, "wb") as f:
+            f.write(b"x")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_failure_is_collected_and_rest_continues(self):
+        missing = os.path.join(self.dir, "25179704-09-侯添悦-作业一.doc")
+        plans = [(missing, "2517970409 侯添悦 作业一.doc"),
+                 (self.src, "2517970408 何金森 作业一.doc")]
+        out = os.path.join(self.dir, "out")
+        errors = []
+        done = export_files(plans, out, errors=errors)
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(os.path.basename(errors[0][0]), "25179704-09-侯添悦-作业一.doc")
+        self.assertEqual([os.path.basename(b) for _, b in done], ["2517970408 何金森 作业一.doc"])
+
+    def test_existing_directory_at_target_gets_suffix(self):
+        out = os.path.join(self.dir, "out")
+        os.makedirs(os.path.join(out, "2517970408 何金森 作业一.doc"))
+        done = export_files([(self.src, "2517970408 何金森 作业一.doc")], out)
+        self.assertEqual(os.path.basename(done[0][1]), "2517970408 何金森 作业一 (2).doc")

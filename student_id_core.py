@@ -25,10 +25,11 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import time
 from dataclasses import dataclass, field
 
 #: 版本号（界面标题和“关于”里显示）
-APP_VERSION = "2.5"
+APP_VERSION = "2.5.1"
 
 #: 默认要删除的字符
 DEFAULT_STRIP_CHARS = "-+_"
@@ -522,10 +523,13 @@ def plan_renames(paths, class_no: str = "4", *,
     return plans, skipped
 
 
-def export_files(plans, target_dir: str, *, copy: bool = True) -> list[tuple[str, str]]:
+def export_files(plans, target_dir: str, *, copy: bool = True,
+                 errors: list | None = None) -> list[tuple[str, str]]:
     """按 ``plan_renames`` 的结果复制（或直接重命名）文件，返回 ``[(源, 目标)]``。
 
     目标已有同名文件时自动加 `` (2)`` `` (3)`` 后缀，不会覆盖别人的文件。
+    传了 ``errors`` 时不会因为单个文件失败而中断，失败的会追加为
+    ``(源, 目标, 异常)``。
     """
     target_dir = os.path.abspath(target_dir)
     os.makedirs(target_dir, exist_ok=True)
@@ -549,10 +553,30 @@ def export_files(plans, target_dir: str, *, copy: bool = True) -> list[tuple[str
             done.append((src, dest))       # 名字本来就对，什么都不用做
             used.add(candidate.lower())
             continue
-        if copy:
-            shutil.copy2(src, dest)
-        else:
-            os.replace(src, dest)
+        def _do() -> None:
+            if copy:
+                try:
+                    shutil.copy2(src, dest)
+                except OSError:
+                    # 目标文件夹不支持复制元数据时退一步，只拷内容
+                    if os.path.exists(dest):
+                        raise
+                    shutil.copyfile(src, dest)
+            else:
+                os.replace(src, dest)
+
+        try:
+            try:
+                _do()
+            except OSError:
+                # 杀毒软件 / OneDrive 同步偶尔会短暂占用，等一下再试一次
+                time.sleep(0.2)
+                _do()
+        except OSError as exc:
+            if errors is not None:
+                errors.append((src, dest, exc))
+                continue
+            raise
         used.add(candidate.lower())
         done.append((src, dest))
     return done

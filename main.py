@@ -605,13 +605,16 @@ class App(tk.Tk):
         if not plans:
             messagebox.showinfo("提示", "没有可改名的文件：文件名开头要带学号")
             return
-        try:
-            done = export_files(plans, folder, copy=copy)
-        except OSError as e:
-            messagebox.showerror("导出失败", str(e))
+        if not self._check_writable(folder):
             return
+        failures: list = []
+        done = export_files(plans, folder, copy=copy, errors=failures)
         verb = "已复制" if copy else "已重命名"
-        self.set_status(f"{verb} {len(done)} 个文件 → {folder}")
+        self.set_status(f"{verb} {len(done)} 个文件 → {folder}"
+                        + (f"，{len(failures)} 个失败" if failures else ""))
+        if failures:
+            self._report_failures(failures, folder, copy=copy, done=len(done))
+            return
         preview = "\n".join(f"{os.path.basename(a)}  →  {os.path.basename(b)}"
                             for a, b in done[:8])
         if len(done) > 8:
@@ -621,13 +624,43 @@ class App(tk.Tk):
                 f"{verb} {len(done)} 个文件到：\n{folder}\n\n{preview}\n\n要打开文件夹吗？"):
             self._open_folder(folder)
 
-    def _save_list(self, result, folder):
-        path = os.path.join(folder, "学号处理结果.txt")
+    def _check_writable(self, folder: str) -> bool:
+        """导出前先试试能不能在这个文件夹里写东西，避免导到一半才报错。"""
         try:
             os.makedirs(folder, exist_ok=True)
+            probe = os.path.join(folder, ".write_test.tmp")
+            with open(probe, "w", encoding="utf-8") as f:
+                f.write("ok")
+            os.remove(probe)
+            return True
         except OSError as e:
-            messagebox.showerror("保存失败", f"无法创建文件夹：\n{folder}\n\n{e}")
+            messagebox.showerror(
+                "无法写入这个文件夹",
+                f"{folder}\n\n{e}\n\n"
+                "常见原因：\n"
+                "· 文件夹被设为只读，或当前账户没有写权限；\n"
+                "· 文件夹在 OneDrive / 网盘里，正在同步或被占用；\n"
+                "· Windows「受控文件夹访问」拦住了这个程序。\n\n"
+                "换个文件夹试试，比如：源文件夹下新建「已处理」。")
+            return False
+
+    def _report_failures(self, failures, folder: str, *, copy: bool, done: int):
+        lines = []
+        for src, dest, exc in failures[:5]:
+            reason = getattr(exc, "strerror", None) or str(exc)
+            lines.append(f"· {os.path.basename(dest)}\n  {reason}")
+        more = f"\n… 还有 {len(failures) - 5} 个" if len(failures) > 5 else ""
+        tips = ("\n\n常见原因：\n"
+                "· 同名文件正在 Word / Excel 里打开（先关掉再试）；\n"
+                "· 目标文件是只读的；\n"
+                "· 文件夹在 OneDrive，正在同步。")
+        head = f"成功 {done} 个，失败 {len(failures)} 个：\n{folder}\n\n"
+        messagebox.showwarning("部分文件没有导出", head + "\n".join(lines) + more + tips)
+
+    def _save_list(self, result, folder):
+        if not self._check_writable(folder):
             return
+        path = os.path.join(folder, "学号处理结果.txt")
         if os.path.exists(path) and not messagebox.askyesno("文件已存在", f"{path}\n\n要覆盖吗？"):
             return
         try:
