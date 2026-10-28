@@ -1,8 +1,17 @@
 # -*- coding: utf-8 -*-
 """给 Tk 窗口加上 Windows 原生的“拖文件/文件夹进来”支持。
 
-用的是 ``WM_DROPFILES``（DragAcceptFiles + 子类化窗口过程），
-不需要第三方库，也不影响 Tk 其它功能。
+用的是 ``WM_DROPFILES``（``DragAcceptFiles`` + 子类化窗口过程），
+不需要第三方库。
+
+实现上有两个坑，这里都绕开了：
+
+1. **不能在窗口过程里调用 Tk/Tcl 的 API**（``root.after``、读写控件等）。
+   真实拖放时 Explorer 还在自己的 OLE 拖拽循环里，这时回调到 Tcl 很容易
+   卡死；所以窗口过程里只做 ``DragQueryFileW`` + ``DragFinish``，
+   把路径丢进一个普通队列，由主线程定时轮询后再回调。
+2. 子类化必须保存旧的窗口过程，并在处理完后转发所有其它消息，
+   否则 Tk 的控件会直接失灵。
 
 用法::
 
@@ -16,11 +25,12 @@ from __future__ import annotations
 
 import ctypes
 import sys
+from collections import deque
 from ctypes import wintypes
 
 WM_DROPFILES = 0x0233
 GWLP_WNDPROC = -4
-MAX_PATH = 260
+POLL_MS = 100
 
 _IS_WINDOWS = sys.platform == "win32"
 
@@ -37,20 +47,20 @@ if _IS_WINDOWS:  # pragma: no cover - 只在 Windows 上执行
     _user32.DefWindowProcW.argtypes = [
         wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
     _user32.DefWindowProcW.restype = ctypes.c_ssize_t
+
     _shell32.DragAcceptFiles.argtypes = [wintypes.HWND, wintypes.BOOL]
     _shell32.DragQueryFileW.argtypes = [
         wintypes.HANDLE, wintypes.UINT, wintypes.LPWSTR, wintypes.UINT]
     _shell32.DragQueryFileW.restype = wintypes.UINT
     _shell32.DragFinish.argtypes = [wintypes.HANDLE]
+    _shell32.DragFinish.restype = None
 
     if ctypes.sizeof(ctypes.c_void_p) == 8:
         _set_window_long = _user32.SetWindowLongPtrW
-        _set_window_long.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
-        _set_window_long.restype = ctypes.c_void_p
     else:  # 32 位 Python 没有 SetWindowLongPtrW
         _set_window_long = _user32.SetWindowLongW
-        _set_window_long.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
-        _set_window_long.restype = ctypes.c_void_p
+    _set_window_long.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+    _set_window_long.restype = ctypes.c_void_p
 
 
 class FileDropTarget:
@@ -60,6 +70,8 @@ class FileDropTarget:
         self.root = root
         self.callback = callback
         self._old_procs: dict[int, int] = {}
+        self._pending: deque[list[str]] = deque()
+        self._poll_id = None
         self._proc = _WNDPROC(self._wndproc) if _IS_WINDOWS else None
         self.enabled = False
 
@@ -72,10 +84,17 @@ class FileDropTarget:
         for hwnd in [top, *self._descendants(top)]:
             self._hook(hwnd)
         self.enabled = True
+        self._schedule_poll()
         return True
 
     def close(self) -> None:
         """恢复原来的窗口过程。"""
+        if self._poll_id is not None:
+            try:
+                self.root.after_cancel(self._poll_id)
+            except Exception:
+                pass
+            self._poll_id = None
         if not self.enabled:
             return
         for hwnd, old in list(self._old_procs.items()):
@@ -86,6 +105,24 @@ class FileDropTarget:
                 pass
         self._old_procs.clear()
         self.enabled = False
+
+    # ---------- 轮询（主线程，可以安全调用 Tk） ----------
+    def _schedule_poll(self) -> None:
+        try:
+            self._poll_id = self.root.after(POLL_MS, self._poll)
+        except Exception:
+            self._poll_id = None
+
+    def _poll(self) -> None:
+        self._poll_id = None
+        while self._pending:
+            paths = self._pending.popleft()
+            try:
+                self.callback(paths)
+            except Exception as exc:  # 回调出错不要让轮询停掉
+                print(f"拖放回调出错：{exc!r}", file=sys.stderr)
+        if self.enabled:
+            self._schedule_poll()
 
     # ---------- 内部 ----------
     def _descendants(self, hwnd: int) -> list[int]:
@@ -104,13 +141,15 @@ class FileDropTarget:
             return
         old = _set_window_long(wintypes.HWND(hwnd), GWLP_WNDPROC,
                                ctypes.cast(self._proc, ctypes.c_void_p))
-        if not old:
+        old_value = int(old or 0) if old is not None else 0
+        if not old_value:  # 子类化失败，别记下来（否则转发时无从调用）
             return
-        self._old_procs[hwnd] = int(old)
+        self._old_procs[hwnd] = old_value
         _shell32.DragAcceptFiles(wintypes.HWND(hwnd), True)
 
     def _wndproc(self, hwnd, msg, wparam, lparam):
         if msg == WM_DROPFILES:
+            # 这里只做纯 Win32 的事：读路径、释放句柄，绝不碰 Tk
             try:
                 paths = self._read_paths(wparam)
             except Exception:
@@ -121,14 +160,16 @@ class FileDropTarget:
                 except Exception:
                     pass
             if paths:
-                # Tk 的 after 保证回调在主线程、且不在窗口过程里执行
-                self.root.after(0, lambda: self.callback(paths))
+                self._pending.append(paths)
             return 0
 
         old = self._old_procs.get(int(hwnd))
         if old:
-            return _user32.CallWindowProcW(
-                ctypes.c_void_p(old), hwnd, msg, wparam, lparam)
+            try:
+                return _user32.CallWindowProcW(
+                    ctypes.c_void_p(old), hwnd, msg, wparam, lparam)
+            except Exception:
+                pass
         return _user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
     @staticmethod

@@ -22,3 +22,7 @@ _gh_upload.py
 token.txt
 docs/_*
 *.log
+
+# 开发期探针脚本与打包中间目录
+_drop_probe*.py
+build_*/

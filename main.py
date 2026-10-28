@@ -393,7 +393,8 @@ class App(tk.Tk):
             message = "没有找到可读取的文本文件。"
             if names:
                 message += f"\n\n拖入/选中的是：{names}"
-            message += "\n\n文件夹里需要放 .txt / .csv / .tsv / .log / .md 等文本文件。"
+            message += ("\n\n文件夹里需要放 .txt / .csv / .tsv / .log / .md 等文本文件；"
+                        "Excel / Word / PDF 请先另存为 txt 或 csv（不支持直接读二进制文件）。")
             if bundle.errors:
                 message += f"\n\n读取失败 {len(bundle.errors)} 个，第一个原因：{bundle.errors[0][1]}"
             messagebox.showwarning("导入失败", message)

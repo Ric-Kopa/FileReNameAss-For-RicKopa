@@ -15,6 +15,7 @@ from student_id_core import (  # noqa: E402
     clean_line,
     fix_student_id,
     is_valid_class_no,
+    looks_binary,
     process_file,
     process_text,
     read_paths,
@@ -262,6 +263,33 @@ class ReadPathsTest(unittest.TestCase):
         bundle = read_paths([os.path.join(self.folder, "no-such-file.txt")])
         self.assertEqual(bundle.files, [])
         self.assertEqual(bundle.text, "")
+
+    def test_binary_file_is_skipped(self):
+        """直接拖入 xlsx / docx 这类二进制文件时要跳过，而不是读成乱码卡死界面。"""
+        binary = os.path.join(self.folder, "students.xlsx")
+        with open(binary, "wb") as f:
+            f.write(b"PK\x03\x04\x00\x00\x00\x00Excel data\x00\x00")
+        bundle = read_paths([binary])
+        self.assertEqual(bundle.files, [])
+        self.assertEqual(bundle.text, "")
+        self.assertEqual(len(bundle.errors), 1)
+        self.assertIn("二进制", bundle.errors[0][1])
+
+    def test_oversized_file_is_skipped(self):
+        import unittest.mock as mock
+
+        big = os.path.join(self.folder, "big.txt")
+        self._write(big, "202404041\n" * 200)
+        with mock.patch("student_id_core.MAX_FILE_BYTES", 16):
+            bundle = read_paths([big])
+        self.assertEqual(bundle.files, [])
+        self.assertIn("太大", bundle.errors[0][1])
+
+    def test_looks_binary_heuristic(self):
+        self.assertTrue(looks_binary(b"PK\x03\x04\x00\x00"))
+        self.assertTrue(looks_binary(bytes(range(0, 32)) * 8))
+        self.assertFalse(looks_binary("202404041\n学号\n".encode("utf-8")))
+        self.assertFalse(looks_binary(b""))
 
     def test_text_flows_into_process_text(self):
         bundle = read_paths([self.folder])

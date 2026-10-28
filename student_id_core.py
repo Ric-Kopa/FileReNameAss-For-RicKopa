@@ -26,7 +26,7 @@ import os
 from dataclasses import dataclass, field
 
 #: 版本号（界面标题和“关于”里显示）
-APP_VERSION = "2.1"
+APP_VERSION = "2.2"
 
 #: 默认要删除的字符
 DEFAULT_STRIP_CHARS = "-+_"
@@ -208,10 +208,8 @@ def process_file(path: str, *args, **kwargs) -> ProcessResult:
     return process_text(read_text_file(path), *args, **kwargs)
 
 
-def read_text_file(path: str) -> str:
-    """按常见中文编码尝试读取文本，避免 ``errors='ignore'`` 丢字。"""
-    with open(path, "rb") as f:
-        data = f.read()
+def _decode_bytes(data: bytes) -> str:
+    """按常见中文编码尝试解码，避免 ``errors='ignore'`` 丢字。"""
     for encoding in ("utf-8-sig", "utf-8", "gb18030"):
         try:
             return data.decode(encoding)
@@ -220,11 +218,39 @@ def read_text_file(path: str) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+def read_text_file(path: str) -> str:
+    """按常见中文编码尝试读取文本。"""
+    with open(path, "rb") as f:
+        data = f.read()
+    return _decode_bytes(data)
+
+
+def looks_binary(data: bytes) -> bool:
+    """粗略判断是不是二进制文件（Excel / Word / PDF / 图片等）。
+
+    拖进来的如果是 xlsx、docx、pdf 这类文件，硬当文本读会解码出几兆乱码，
+    界面会直接卡死，所以先嗅一下：含 NUL 字节、或控制字符过多就当作二进制。
+    """
+    sample = data[:8192]
+    if not sample:
+        return False
+    if b"\0" in sample:
+        return True
+    control = sum(1 for byte in sample if byte < 9 or 13 < byte < 32)
+    return control / len(sample) > 0.05
+
+
 #: 拖入文件夹时，认作“学号文本”的后缀
 TEXT_SUFFIXES = (".txt", ".csv", ".tsv", ".log", ".md", ".dat")
 
 #: 一次最多导入的文件数（防止误拖整个盘符）
 MAX_IMPORT_FILES = 300
+
+#: 单个文件大小上限（超过就不读，避免把界面卡死）
+MAX_FILE_BYTES = 20 * 1024 * 1024
+
+#: 合并后的文本长度上限（字符数）
+MAX_TOTAL_CHARS = 2_000_000
 
 
 @dataclass
@@ -287,16 +313,38 @@ def read_paths(paths, *, recursive: bool = True) -> ImportBundle:
         targets = targets[:MAX_IMPORT_FILES]
 
     chunks: list[str] = []
+    total_chars = 0
     for path in targets:
         try:
-            data = read_text_file(path)
+            size = os.path.getsize(path)
         except OSError as exc:
             bundle.errors.append((path, str(exc)))
             continue
+        if size > MAX_FILE_BYTES:
+            bundle.errors.append(
+                (path, f"文件太大（{size / 1048576:.1f} MB），已跳过（上限 "
+                       f"{MAX_FILE_BYTES / 1048576:.0f} MB）"))
+            continue
+        try:
+            with open(path, "rb") as fh:
+                raw = fh.read()
+        except OSError as exc:
+            bundle.errors.append((path, str(exc)))
+            continue
+        if looks_binary(raw):
+            bundle.errors.append(
+                (path, "看起来是二进制文件（Excel / Word / PDF 等暂不支持），"
+                       "请先另存为 txt 或 csv 再导入"))
+            continue
+        data = _decode_bytes(raw)
         if not data.strip():
             continue
         bundle.files.append(path)
+        total_chars += len(data)
         chunks.append(data.strip("\n"))
+        if total_chars > MAX_TOTAL_CHARS:
+            bundle.errors.append((path, "内容太多，后面的文件已停止读取"))
+            break
 
     bundle.text = "\n".join(chunks)
     return bundle
