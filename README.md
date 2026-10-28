@@ -6,8 +6,10 @@
 ![界面截图](docs/screenshot.png)
 
 > 仓库：<https://github.com/Ric-Kopa/FileReNameAss-For-RicKopa>
-> 不想装 Python 的话，直接到 [Releases](https://github.com/Ric-Kopa/FileReNameAss-For-RicKopa/releases)
-> 下载打包好的 exe。
+> 不想装 Python 的话，直接到 [Releases](https://github.com/Ric-Kopa/FileReNameAss-For-RicKopa/releases/latest)
+> 下载打包好的 exe：
+> `student-id-tool-v2.1.0-singlefile.exe`（单文件版）或
+> `student-id-tool-v2.1.0-folder.zip`（文件夹版，解压后双击 `学号补零工具.exe`，推荐）。
 
 ## 补零规则
 
