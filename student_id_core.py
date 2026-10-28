@@ -27,7 +27,7 @@ import re
 from dataclasses import dataclass, field
 
 #: 版本号（界面标题和“关于”里显示）
-APP_VERSION = "2.3"
+APP_VERSION = "2.4"
 
 #: 默认要删除的字符
 DEFAULT_STRIP_CHARS = "-+_"
@@ -147,6 +147,23 @@ class ProcessResult:
         return "，".join(parts)
 
 
+def rewrite_leading_id(text: str, class_no: str = "4") -> str | None:
+    """把**行首**的学号换成补零后的，后面的姓名/作业名原样保留。
+
+    ``202404041 张三 作业一`` → ``2024040401 张三 作业一``
+    行首不是学号（或后面没有文字）时返回 ``None``。
+    """
+    matched = _match_name_id(text)
+    if not matched:
+        return None
+    digits, rest = matched
+    if not _split_rest(rest):
+        # 整行只有一个学号（可能夹着空格/分隔符），交给常规的清理+补零流程
+        return None
+    fixed = fix_student_id(digits, class_no)
+    return f"{fixed}{rest}"
+
+
 def process_text(
     text: str,
     class_no: str = "4",
@@ -182,24 +199,30 @@ def process_text(
             result.emptied += 1
             continue
 
-        if not cleaned.isdigit():
-            result.invalid.append((lineno, cleaned))
-            result.lines.append(cleaned)
-            continue
+        if cleaned.isdigit():
+            final = fix_student_id(cleaned, class_no) if pad else cleaned
+            before = cleaned
+        else:
+            # 形如「202404041 张三 作业一」：只把学号补零，后面的文字（含分隔符）原样保留
+            original = remove_invisible((raw or "").strip())
+            if halfwidth:
+                original = normalize_width(original)
+            final = rewrite_leading_id(original, class_no) if pad else None
+            if final is None:
+                result.invalid.append((lineno, cleaned))
+                result.lines.append(cleaned)
+                continue
+            before = original
 
         if dedupe:
-            if cleaned in seen:
+            if final in seen:
                 result.duplicates += 1
                 continue
-            seen.add(cleaned)
+            seen.add(final)
 
-        if pad:
-            padded = fix_student_id(cleaned, class_no)
-            if padded != cleaned:
-                result.fixed += 1
-            result.lines.append(padded)
-        else:
-            result.lines.append(cleaned)
+        if final != before:
+            result.fixed += 1
+        result.lines.append(final)
 
     return result
 
@@ -257,6 +280,40 @@ MAX_TOTAL_CHARS = 2_000_000
 _NAME_ID_RE = re.compile(r"^\s*([0-9][0-9\-\+_\. ]{5,}[0-9])")
 
 
+def _match_name_id(text: str) -> tuple[str, str] | None:
+    """匹配开头的学号，返回 ``(纯数字学号, 后面的剩余文字)``。
+
+    学号最多按 ``FULL_ID_LENGTH`` 位截断：像 ``2517970408-08-李四`` 这种
+    “学号后面又跟了一段编号”的写法，只取前 10 位数字，后面的留作文字。
+    """
+    match = _NAME_ID_RE.match(text)
+    if not match:
+        return None
+    core = match.group(1)
+    if core[-1] == " ":
+        return None
+    rest = text[match.end():]
+    if rest[:1].isdigit():
+        return None
+    digits = re.sub(r"[^0-9]", "", core)
+    if len(digits) > FULL_ID_LENGTH:
+        seen = 0
+        cut = len(core)
+        for index, ch in enumerate(core):
+            if ch.isdigit():
+                seen += 1
+                if seen == FULL_ID_LENGTH:
+                    cut = index + 1
+                    break
+        rest = core[cut:] + rest
+        digits = digits[:FULL_ID_LENGTH]
+        if rest[:1].isdigit():
+            return None
+    if len(digits) < 6:
+        return None
+    return digits, rest
+
+
 def student_id_from_name(filename: str, *, min_digits: int = 6) -> str | None:
     """从文件名里取学号，例如 ``25179704-08-何金森-作业一.doc`` → ``2517970408``。
 
@@ -264,19 +321,55 @@ def student_id_from_name(filename: str, *, min_digits: int = 6) -> str | None:
     所以「作业一.doc」「第3组.doc」这类不会被误认成学号。
     """
     stem = os.path.splitext(os.path.basename(filename))[0]
-    match = _NAME_ID_RE.match(stem)
-    if not match:
+    matched = _match_name_id(stem)
+    if not matched or len(matched[0]) < min_digits:
         return None
-    core = match.group(1)
-    if core[-1] == " ":
+    return matched[0]
+
+
+#: 从文件名生成输出行时的格式
+NAME_FORMAT_SPLIT = "split"   # 学号 + 空格分隔的剩余文字（默认）
+NAME_FORMAT_KEEP = "keep"     # 保留原文件名，只把开头的学号换成补零后的
+NAME_FORMAT_NOEXT = "noext"   # 同 keep，但去掉扩展名
+
+#: 界面下拉框里的顺序与说明
+NAME_FORMATS = (
+    (NAME_FORMAT_SPLIT, "学号 + 空格分开的文字（推荐）"),
+    (NAME_FORMAT_KEEP, "保留原文件名（含扩展名），只换学号"),
+    (NAME_FORMAT_NOEXT, "保留原文件名，去掉扩展名"),
+)
+
+_SPLIT_SEPS = re.compile(r"[\s\-+_.·、,，;；/\\|~～—–]+")
+
+
+def _split_rest(rest: str) -> str:
+    """把学号后面的 ``-08-何金森-作业一`` 拆成空格分隔的文字。"""
+    return " ".join(part for part in _SPLIT_SEPS.split(rest) if part)
+
+
+def rewrite_name(filename: str, class_no: str = "4", *,
+                 fmt: str = NAME_FORMAT_SPLIT) -> str | None:
+    """把文件名开头的学号换成补零后的学号，**其余文字原样保留**。
+
+    例：``25179704-08-何金森-作业一.doc``
+
+    - ``split``（默认）→ ``2517970408 何金森 作业一``
+    - ``keep``        → ``2517970408-何金森-作业一.doc``
+    - ``noext``       → ``2517970408-何金森-作业一``
+    """
+    base = os.path.basename(filename)
+    stem, ext = os.path.splitext(base)
+    matched = _match_name_id(stem)
+    if not matched:
         return None
-    digits = re.sub(r"[^0-9]", "", core)
-    if len(digits) < min_digits:
-        return None
-    rest = stem[match.end():]
-    if rest[:1].isdigit():  # 学号后面还连着数字，说明被截断了，宁可不取
-        return None
-    return digits
+    digits, rest = matched
+    fixed = fix_student_id(digits, class_no)
+    if fmt == NAME_FORMAT_KEEP:
+        return f"{fixed}{rest}{ext}"
+    if fmt == NAME_FORMAT_NOEXT:
+        return f"{fixed}{rest}"
+    tail = _split_rest(rest)
+    return f"{fixed} {tail}" if tail else fixed
 
 
 @dataclass
@@ -287,6 +380,7 @@ class ImportBundle:
     files: list[str] = field(default_factory=list)      # 实际读取内容的文件
     names: list[str] = field(default_factory=list)      # 从文件名取到学号的文件
     errors: list[tuple[str, str]] = field(default_factory=list)  # (路径, 原因)
+    source_dir: str = ""                                # 拖入的文件夹（用于“保存到源文件夹”）
 
     @property
     def lines(self) -> int:
@@ -322,12 +416,15 @@ def _iter_folder_files(folder: str, *, recursive: bool) -> list[str]:
     return found
 
 
-def read_paths(paths, *, recursive: bool = True, from_names: bool = True) -> ImportBundle:
+def read_paths(paths, *, recursive: bool = True, from_names: bool = True,
+               name_format: str = NAME_FORMAT_SPLIT,
+               class_no: str = "4") -> ImportBundle:
     """读取拖进来/选中的文件与文件夹，合并成一段文本。
 
     - 文本文件（内容确实是文本）读取内容；
-    - Word / Excel / PDF 等读不了的文件，``from_names=True`` 时从**文件名**里取学号，
-      例如 ``25179704-08-何金森-作业一.doc`` → ``2517970408``；
+    - Word / Excel / PDF 等读不了的文件，``from_names=True`` 时从**文件名**解析，
+      保留学号后面的姓名/作业名（格式见 ``NAME_FORMATS``）：
+      ``25179704-08-何金森-作业一.doc`` → ``2517970408 何金森 作业一``；
     - 读不了又取不到学号的文件记在 ``errors`` 里，不中断其它文件。
     """
     bundle = ImportBundle()
@@ -335,12 +432,16 @@ def read_paths(paths, *, recursive: bool = True, from_names: bool = True) -> Imp
         paths = [paths]
 
     targets: list[str] = []
+    first_folder = ""
     for raw in paths:
         path = os.path.abspath(str(raw))
         if os.path.isdir(path):
+            first_folder = first_folder or path
             targets.extend(_iter_folder_files(path, recursive=recursive))
         elif os.path.isfile(path):
+            first_folder = first_folder or os.path.dirname(path)
             targets.append(path)
+    bundle.source_dir = first_folder
 
     # 去重但保持顺序
     targets = list(dict.fromkeys(targets))
@@ -350,13 +451,14 @@ def read_paths(paths, *, recursive: bool = True, from_names: bool = True) -> Imp
     chunks: list[str] = []
     total_chars = 0
     for path in targets:
-        name_id = student_id_from_name(path) if from_names else None
+        name_line = (rewrite_name(path, class_no, fmt=name_format)
+                     if from_names else None)
 
         def _use_name(reason: str) -> None:
             """用文件名里的学号顶上；取不到才记为跳过。"""
-            if name_id:
+            if name_line:
                 bundle.names.append(path)
-                chunks.append(name_id)
+                chunks.append(name_line)
             else:
                 bundle.errors.append((path, reason))
 

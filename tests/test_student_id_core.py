@@ -5,6 +5,7 @@
 """
 
 import os
+import shutil
 import sys
 import unittest
 
@@ -12,6 +13,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from student_id_core import (  # noqa: E402
     DEFAULT_STRIP_CHARS,
+    NAME_FORMAT_KEEP,
+    NAME_FORMAT_NOEXT,
+    rewrite_name,
     clean_line,
     fix_student_id,
     is_valid_class_no,
@@ -367,3 +371,63 @@ class StudentIdFromNameTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class RewriteNameTest(unittest.TestCase):
+    """从文件名生成输出行：只换学号，其余文字保留。"""
+
+    def test_split_is_default(self):
+        self.assertEqual(rewrite_name("25179704-08-何金森-作业一.doc"),
+                         "2517970408 何金森 作业一")
+
+    def test_keep_keeps_extension_and_separators(self):
+        self.assertEqual(rewrite_name("25179704-08-何金森-作业一.doc", fmt=NAME_FORMAT_KEEP),
+                         "2517970408-何金森-作业一.doc")
+
+    def test_noext_drops_extension(self):
+        self.assertEqual(rewrite_name("25179704-08-何金森-作业一.pdf", fmt=NAME_FORMAT_NOEXT),
+                         "2517970408-何金森-作业一")
+
+    def test_nine_digit_name_is_padded(self):
+        self.assertEqual(rewrite_name("202404041-张三.docx"), "2024040401 张三")
+
+    def test_ten_digit_name_not_padded_twice(self):
+        self.assertEqual(rewrite_name("2517970408-08-李四.docx"), "2517970408 08 李四")
+
+    def test_name_without_id_returns_none(self):
+        self.assertIsNone(rewrite_name("扫描件.pdf"))
+        self.assertIsNone(rewrite_name("作业一.doc"))
+
+
+class LineRewriteTest(unittest.TestCase):
+    """行首是学号、后面带姓名/作业名时，只补学号。"""
+
+    def test_keeps_trailing_text(self):
+        r = process_text("202404041 张三 作业一\n202404042-李四 项目二")
+        self.assertEqual(r.output, "2024040401 张三 作业一\n2024040402-李四 项目二")
+        self.assertEqual(r.fixed, 2)
+        self.assertEqual(r.invalid, [])
+
+    def test_already_padded_line_not_counted(self):
+        r = process_text("2517970408-08-李四")
+        self.assertEqual(r.output, "2517970408-08-李四")
+        self.assertEqual(r.fixed, 0)
+
+    def test_line_not_starting_with_id_kept_as_invalid(self):
+        r = process_text("学号202404047")
+        self.assertEqual(r.invalid, [(1, "学号202404047")])
+
+
+class ReadPathsFormatTest(unittest.TestCase):
+    def test_name_format_keep(self):
+        folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_fmt_dir")
+        shutil.rmtree(folder, ignore_errors=True)
+        try:
+            os.makedirs(folder)
+            with open(os.path.join(folder, "25179704-08-何金森-作业一.doc"), "wb") as f:
+                f.write(b"PK\x03\x04" + b"\x00" * 120)
+            bundle = read_paths([folder], name_format=NAME_FORMAT_KEEP)
+            self.assertEqual(bundle.text, "2517970408-何金森-作业一.doc")
+            self.assertEqual(bundle.source_dir, os.path.abspath(folder))
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+

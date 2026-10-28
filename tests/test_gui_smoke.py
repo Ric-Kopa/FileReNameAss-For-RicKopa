@@ -161,6 +161,25 @@ class GuiSmokeTest(unittest.TestCase):
             app_module.messagebox.askyesno = old_ask
             self._remove_folder(folder)
 
+    def test_name_format_default_and_options(self):
+        self.assertEqual(self.app.name_format_var.get(), app_module.NAME_FORMATS[0][1])
+        self.assertEqual(len(app_module.NAME_FORMATS), 3)
+        self.assertEqual(app_module.NAME_FORMAT_BY_LABEL[app_module.NAME_FORMATS[0][1]], "split")
+
+    def test_save_dir_uses_source_folder(self):
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_save_src")
+        os.makedirs(src, exist_ok=True)
+        try:
+            self.app.source_dir = src
+            self.assertEqual(self.app._save_dir("source"), src)
+            self.assertEqual(self.app._save_dir("subfolder"),
+                             os.path.join(src, "_save_src-已处理"))
+        finally:
+            os.rmdir(src)
+
+    def test_save_mode_default_is_source(self):
+        self.assertEqual(self.app.save_mode_var.get(), "source")
+
     def test_drop_target_can_be_enabled(self):
         if sys.platform != "win32":
             self.skipTest("拖放只支持 Windows")

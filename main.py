@@ -22,6 +22,8 @@ from tkinter import filedialog, messagebox, ttk
 from student_id_core import (
     APP_VERSION,
     DEFAULT_STRIP_CHARS,
+    NAME_FORMATS,
+    NAME_FORMAT_SPLIT,
     ProcessResult,
     is_valid_class_no,
     process_text,
@@ -31,6 +33,9 @@ from student_id_core import (
 from file_drop import FileDropTarget
 
 APP_TITLE = "学号补零工具"
+
+#: 下拉框显示的文字 → 核心里的格式代码
+NAME_FORMAT_BY_LABEL = {label: code for code, label in NAME_FORMATS}
 
 SAMPLE_TEXT = "\n".join([
     "202404041",
@@ -84,6 +89,11 @@ class App(tk.Tk):
         self.halfwidth_var = tk.BooleanVar(value=True)
         self.dedupe_var = tk.BooleanVar(value=False)
         self.from_names_var = tk.BooleanVar(value=True)
+        self.name_format_var = tk.StringVar(value=NAME_FORMATS[0][1])
+        # 保存位置：source=源文件夹 / subfolder=源文件夹下新建子文件夹 / choose=每次选择
+        self.save_mode_var = tk.StringVar(value="source")
+        # 最近一次导入所在的文件夹（“保存到源文件夹”用）
+        self.source_dir = ""
 
         self._setup_style()
         self.title(f"{APP_TITLE} v{APP_VERSION}")
@@ -196,8 +206,22 @@ class App(tk.Tk):
         name_row.grid(row=3, column=0, columnspan=5, sticky="w", pady=(4, 0))
         ttk.Checkbutton(name_row, text="Word/Excel 作业从文件名取学号",
                         variable=self.from_names_var).pack(side="left")
-        ttk.Label(name_row, text="（25179704-08-何金森-作业一.doc → 2517970408）",
-                  style="Hint.TLabel").pack(side="left", padx=(6, 0))
+        ttk.Label(name_row, text="输出格式：", style="Hint.TLabel").pack(side="left", padx=(14, 4))
+        self.format_box = ttk.Combobox(
+            name_row, textvariable=self.name_format_var, state="readonly", width=34,
+            values=[label for _, label in NAME_FORMATS])
+        self.format_box.pack(side="left")
+
+        # 保存位置：默认存回源文件夹
+        save_row = ttk.Frame(box)
+        save_row.grid(row=4, column=0, columnspan=5, sticky="w", pady=(6, 0))
+        ttk.Label(save_row, text="保存到：").pack(side="left")
+        ttk.Radiobutton(save_row, text="源文件夹", value="source", variable=self.save_mode_var).pack(
+            side="left", padx=(4, 10))
+        ttk.Radiobutton(save_row, text="源文件夹下新建「已处理」", value="subfolder",
+                        variable=self.save_mode_var).pack(side="left", padx=(0, 10))
+        ttk.Radiobutton(save_row, text="每次选择文件夹", value="choose",
+                        variable=self.save_mode_var).pack(side="left")
 
     def _build_texts(self):
         paned = ttk.Panedwindow(self, orient="horizontal")
@@ -309,6 +333,12 @@ class App(tk.Tk):
         self.halfwidth_var.set(bool(cfg.get("halfwidth", True)))
         self.dedupe_var.set(bool(cfg.get("dedupe", False)))
         self.from_names_var.set(bool(cfg.get("from_names", True)))
+        fmt = cfg.get("name_format")
+        labels = {code: label for code, label in NAME_FORMATS}
+        if fmt in labels:
+            self.name_format_var.set(labels[fmt])
+        if cfg.get("save_mode") in ("source", "subfolder", "choose"):
+            self.save_mode_var.set(cfg["save_mode"])
 
     def _save_settings(self):
         cfg = {
@@ -318,6 +348,9 @@ class App(tk.Tk):
             "halfwidth": self.halfwidth_var.get(),
             "dedupe": self.dedupe_var.get(),
             "from_names": self.from_names_var.get(),
+            "name_format": NAME_FORMAT_BY_LABEL.get(
+                self.name_format_var.get(), NAME_FORMAT_SPLIT),
+            "save_mode": self.save_mode_var.get(),
         }
         try:
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
@@ -398,7 +431,14 @@ class App(tk.Tk):
         self._load_paths(paths)
 
     def _load_paths(self, paths, *, confirm_replace: bool = True):
-        bundle = read_paths(paths, from_names=self.from_names_var.get())
+        opts = self._read_options(need_class=False) or {}
+        bundle = read_paths(paths,
+                            from_names=self.from_names_var.get(),
+                            name_format=NAME_FORMAT_BY_LABEL.get(
+                                self.name_format_var.get(), NAME_FORMAT_SPLIT),
+                            class_no=opts.get("class_no", "4"))
+        if bundle.source_dir:
+            self.source_dir = bundle.source_dir
         if not bundle.text.strip():
             names = "、".join(os.path.basename(str(p)) for p in list(paths)[:3])
             message = "没有找到可读取的学号。"
@@ -407,7 +447,7 @@ class App(tk.Tk):
             message += ("\n\n支持两种方式：\n"
                         "· 文本文件（.txt / .csv / .tsv / .log / .md）直接读内容；\n"
                         "· Word / Excel / PDF 等按文件名取学号，如 "
-                        "`25179704-08-何金森-作业一.doc` → `2517970408`"
+                        "`25179704-08-何金森-作业一.doc` → `2517970408 何金森 作业一`"
                         "（勾选「Word/Excel 作业从文件名取学号」）。")
             if not self.from_names_var.get():
                 message += "\n\n当前没有勾选「Word/Excel 作业从文件名取学号」。"
@@ -450,13 +490,32 @@ class App(tk.Tk):
         if not result.strip():
             messagebox.showinfo("提示", "还没有结果可保存")
             return
-        path = filedialog.asksaveasfilename(
-            title="保存结果",
-            defaultextension=".txt",
-            initialfile="学号补零结果.txt",
-            filetypes=[("文本文件", "*.txt"), ("CSV 文件", "*.csv"), ("所有文件", "*.*")])
-        if not path:
-            return
+
+        mode = self.save_mode_var.get()
+        if mode == "choose":
+            initial = self.source_dir or os.path.expanduser("~")
+            path = filedialog.asksaveasfilename(
+                title="保存结果",
+                initialdir=initial,
+                defaultextension=".txt",
+                initialfile="学号处理结果.txt",
+                filetypes=[("文本文件", "*.txt"), ("CSV 文件", "*.csv"), ("所有文件", "*.*")])
+            if not path:
+                return
+        else:
+            target_dir = self._save_dir(mode)
+            if not target_dir:
+                return
+            try:
+                os.makedirs(target_dir, exist_ok=True)
+            except OSError as e:
+                messagebox.showerror("保存失败", f"无法创建文件夹：\n{target_dir}\n\n{e}")
+                return
+            path = os.path.join(target_dir, "学号处理结果.txt")
+            if os.path.exists(path) and not messagebox.askyesno(
+                    "文件已存在", f"{path}\n\n要覆盖吗？"):
+                return
+
         try:
             # utf-8-sig：Excel 直接打开不乱码，普通编辑器也正常
             with open(path, "w", encoding="utf-8-sig", newline="\n") as f:
@@ -464,8 +523,30 @@ class App(tk.Tk):
         except OSError as e:
             messagebox.showerror("保存失败", str(e))
             return
+
         self.set_status(f"已保存：{path}")
-        messagebox.showinfo("完成", "已保存到：\n" + path)
+        folder = os.path.dirname(path)
+        if messagebox.askyesno("完成", f"已保存到：\n{path}\n\n要打开所在文件夹吗？"):
+            self._open_folder(folder)
+
+    def _save_dir(self, mode: str) -> str:
+        """按“保存到”选项算出目标文件夹；源文件夹未知时让用户选一个。"""
+        base = self.source_dir
+        if not base or not os.path.isdir(base):
+            base = filedialog.askdirectory(title="选择保存位置（还没导入文件夹）")
+            if not base:
+                return ""
+            self.source_dir = base
+        if mode == "subfolder":
+            name = os.path.basename(os.path.normpath(base)) or "学号"
+            return os.path.join(base, f"{name}-已处理")
+        return base
+
+    def _open_folder(self, folder: str):
+        try:
+            os.startfile(folder)  # type: ignore[attr-defined]  # Windows
+        except (AttributeError, OSError):
+            pass
 
     def do_clear(self):
         self.in_text.delete("1.0", "end")
@@ -508,7 +589,9 @@ class App(tk.Tk):
             "勾选「删除空格/Tab」可去掉空格和制表符。\n"
             "5. 点「一键补零」：先删字符，再按规则补 0；"
             "若只想删字符，点「仅清理字符」。\n"
-            "6. 右侧结果可复制或保存（Ctrl+Shift+C / Ctrl+S）。\n\n"
+            "6. 拖入作业文件夹时，学号取自文件名，后面的姓名/作业名按「输出格式」保留。\n"
+            "7. 「保存到」默认存回源文件夹；也可建「已处理」子文件夹或每次选择。\n"
+            "8. 右侧结果可复制或保存（Ctrl+Shift+C / Ctrl+S）。\n\n"
             "示例：2024-0404-1 → 202404041 → 2024040401")
 
     def show_about(self):
