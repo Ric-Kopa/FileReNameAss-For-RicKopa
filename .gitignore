@@ -26,3 +26,8 @@ docs/_*
 # 开发期探针脚本与打包中间目录
 _drop_probe*.py
 build_*/
+
+# 测试时生成的临时目录
+tests/_test_*/
+tests/_doc*/
+tests/_作业*/
