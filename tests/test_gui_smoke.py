@@ -139,7 +139,7 @@ class GuiSmokeTest(unittest.TestCase):
             content = self.app.in_text.get("1.0", "end-1c")
             self.assertIn("2024-0404-1", content)
             self.assertIn("2024040+42", content)
-            self.assertIn("2 个文件", self.app.status.cget("text"))
+            self.assertIn("2 个文本文件", self.app.status.cget("text"))
             self.assertEqual(self.app.do_fix() or self.app.out_text.get("1.0", "end-1c"),
                              "2024040401\n2024040402")
         finally:

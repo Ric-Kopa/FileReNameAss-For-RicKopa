@@ -17,6 +17,7 @@ from student_id_core import (  # noqa: E402
     is_valid_class_no,
     looks_binary,
     process_file,
+    student_id_from_name,
     process_text,
     read_paths,
     read_text_file,
@@ -228,7 +229,7 @@ class ReadPathsTest(unittest.TestCase):
                 os.remove(path)
             except OSError:
                 pass
-        for name in ("sub", ""):
+        for name in ("_docs", "sub", ""):
             try:
                 os.rmdir(os.path.join(self.folder, name))
             except OSError:
@@ -291,6 +292,39 @@ class ReadPathsTest(unittest.TestCase):
         self.assertFalse(looks_binary("202404041\n学号\n".encode("utf-8")))
         self.assertFalse(looks_binary(b""))
 
+    def test_binary_files_fall_back_to_file_names(self):
+        """拖入 Word 作业：读不了内容，就用文件名里的学号。"""
+        folder = os.path.join(self.folder, "_docs")
+        os.makedirs(folder, exist_ok=True)
+        for name in ("25179704-08-何金森-作业一.doc", "25179704-09-侯添悦-作业一.doc"):
+            path = os.path.join(folder, name)
+            self.paths.append(path)
+            with open(path, "wb") as f:            # 老式 .doc 的 OLE 头
+                f.write(b"\xd0\xcf\x11\xe0" + b"\x00" * 200)
+        bundle = read_paths([folder])
+        self.assertEqual(len(bundle.names), 2)
+        self.assertEqual(bundle.files, [])
+        self.assertEqual(bundle.errors, [])
+        self.assertIn("2517970408", bundle.text)
+        self.assertIn("2517970409", bundle.text)
+        self.assertEqual(process_text(bundle.text).total, 2)
+
+    def test_from_names_can_be_disabled(self):
+        folder = os.path.join(self.folder, "_docs2")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, "25179704-08-何金森-作业一.doc")
+        self.paths.append(path)
+        with open(path, "wb") as f:
+            f.write(b"\xd0\xcf\x11\xe0" + b"\x00" * 200)
+        bundle = read_paths([folder], from_names=False)
+        self.assertEqual(bundle.text, "")
+        self.assertEqual(len(bundle.errors), 1)
+        for name in ("_docs2",):
+            try:
+                os.rmdir(os.path.join(self.folder, name))
+            except OSError:
+                pass
+
     def test_text_flows_into_process_text(self):
         bundle = read_paths([self.folder])
         result = process_text(bundle.text)
@@ -310,6 +344,26 @@ class HelpersTest(unittest.TestCase):
     def test_default_strip_chars(self):
         self.assertEqual(DEFAULT_STRIP_CHARS, "-+_")
 
+
+class StudentIdFromNameTest(unittest.TestCase):
+    """从 Word/Excel 作业文件名里取学号。"""
+
+    def test_typical_homework_name(self):
+        self.assertEqual(
+            student_id_from_name("25179704-08-何金森-作业一.doc"), "2517970408")
+        self.assertEqual(
+            student_id_from_name("25179704-09-侯添悦-作业一.doc"), "2517970409")
+
+    def test_other_separators(self):
+        self.assertEqual(student_id_from_name("2517_9704_08_胡芷昕.docx"), "2517970408")
+        self.assertEqual(student_id_from_name("2024-0404-1.txt"), "202404041")
+        self.assertEqual(student_id_from_name("2517970408 张三.pdf"), "2517970408")
+
+    def test_not_an_id(self):
+        self.assertIsNone(student_id_from_name("作业一.doc"))
+        self.assertIsNone(student_id_from_name("第3组.doc"))
+        self.assertIsNone(student_id_from_name("说明.txt"))
+        self.assertIsNone(student_id_from_name("123.doc"))          # 位数太少
 
 if __name__ == "__main__":
     unittest.main()

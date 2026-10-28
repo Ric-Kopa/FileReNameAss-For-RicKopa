@@ -23,10 +23,11 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 
 #: 版本号（界面标题和“关于”里显示）
-APP_VERSION = "2.2"
+APP_VERSION = "2.3"
 
 #: 默认要删除的字符
 DEFAULT_STRIP_CHARS = "-+_"
@@ -252,13 +253,39 @@ MAX_FILE_BYTES = 20 * 1024 * 1024
 #: 合并后的文本长度上限（字符数）
 MAX_TOTAL_CHARS = 2_000_000
 
+#: 文件名开头的学号：数字开头 + 数字/分隔符，至少 6 位数字
+_NAME_ID_RE = re.compile(r"^\s*([0-9][0-9\-\+_\. ]{5,}[0-9])")
+
+
+def student_id_from_name(filename: str, *, min_digits: int = 6) -> str | None:
+    """从文件名里取学号，例如 ``25179704-08-何金森-作业一.doc`` → ``2517970408``。
+
+    只认**文件名开头**的数字（允许中间夹 ``- + _ . 空格``），后面必须紧跟非数字字符，
+    所以「作业一.doc」「第3组.doc」这类不会被误认成学号。
+    """
+    stem = os.path.splitext(os.path.basename(filename))[0]
+    match = _NAME_ID_RE.match(stem)
+    if not match:
+        return None
+    core = match.group(1)
+    if core[-1] == " ":
+        return None
+    digits = re.sub(r"[^0-9]", "", core)
+    if len(digits) < min_digits:
+        return None
+    rest = stem[match.end():]
+    if rest[:1].isdigit():  # 学号后面还连着数字，说明被截断了，宁可不取
+        return None
+    return digits
+
 
 @dataclass
 class ImportBundle:
     """导入一批文件/文件夹后得到的内容与统计。"""
 
     text: str = ""
-    files: list[str] = field(default_factory=list)      # 实际读取的文件
+    files: list[str] = field(default_factory=list)      # 实际读取内容的文件
+    names: list[str] = field(default_factory=list)      # 从文件名取到学号的文件
     errors: list[tuple[str, str]] = field(default_factory=list)  # (路径, 原因)
 
     @property
@@ -266,34 +293,42 @@ class ImportBundle:
         return len([ln for ln in self.text.splitlines() if ln.strip()])
 
     def summary(self) -> str:
-        parts = [f"{len(self.files)} 个文件", f"{self.lines} 行"]
+        parts = []
+        if self.files:
+            parts.append(f"{len(self.files)} 个文本文件")
+        if self.names:
+            parts.append(f"{len(self.names)} 个文件名")
+        if not parts:
+            parts.append("0 个文件")
+        parts.append(f"{self.lines} 行")
         if self.errors:
-            parts.append(f"{len(self.errors)} 个读取失败")
+            parts.append(f"{len(self.errors)} 个跳过")
         return "，".join(parts)
 
 
-def _iter_text_files(folder: str, *, recursive: bool) -> list[str]:
-    """列出文件夹里的文本文件（按路径排序，后缀不区分大小写）。"""
+def _iter_folder_files(folder: str, *, recursive: bool) -> list[str]:
+    """列出文件夹里的全部文件（按路径排序）。"""
     found: list[str] = []
     if recursive:
         for root, dirs, names in os.walk(folder):
             dirs.sort()
             for name in sorted(names):
-                if name.lower().endswith(TEXT_SUFFIXES):
-                    found.append(os.path.join(root, name))
+                found.append(os.path.join(root, name))
     else:
         for name in sorted(os.listdir(folder)):
             path = os.path.join(folder, name)
-            if os.path.isfile(path) and name.lower().endswith(TEXT_SUFFIXES):
+            if os.path.isfile(path):
                 found.append(path)
     return found
 
 
-def read_paths(paths, *, recursive: bool = True) -> ImportBundle:
+def read_paths(paths, *, recursive: bool = True, from_names: bool = True) -> ImportBundle:
     """读取拖进来/选中的文件与文件夹，合并成一段文本。
 
-    文件夹只取 ``TEXT_SUFFIXES`` 里的文本文件；直接选中的文件不论后缀都会读。
-    读不了的文件跳过并记在 ``errors`` 里，不中断其它文件。
+    - 文本文件（内容确实是文本）读取内容；
+    - Word / Excel / PDF 等读不了的文件，``from_names=True`` 时从**文件名**里取学号，
+      例如 ``25179704-08-何金森-作业一.doc`` → ``2517970408``；
+    - 读不了又取不到学号的文件记在 ``errors`` 里，不中断其它文件。
     """
     bundle = ImportBundle()
     if isinstance(paths, (str, os.PathLike)):
@@ -303,7 +338,7 @@ def read_paths(paths, *, recursive: bool = True) -> ImportBundle:
     for raw in paths:
         path = os.path.abspath(str(raw))
         if os.path.isdir(path):
-            targets.extend(_iter_text_files(path, recursive=recursive))
+            targets.extend(_iter_folder_files(path, recursive=recursive))
         elif os.path.isfile(path):
             targets.append(path)
 
@@ -315,15 +350,24 @@ def read_paths(paths, *, recursive: bool = True) -> ImportBundle:
     chunks: list[str] = []
     total_chars = 0
     for path in targets:
+        name_id = student_id_from_name(path) if from_names else None
+
+        def _use_name(reason: str) -> None:
+            """用文件名里的学号顶上；取不到才记为跳过。"""
+            if name_id:
+                bundle.names.append(path)
+                chunks.append(name_id)
+            else:
+                bundle.errors.append((path, reason))
+
         try:
             size = os.path.getsize(path)
         except OSError as exc:
             bundle.errors.append((path, str(exc)))
             continue
         if size > MAX_FILE_BYTES:
-            bundle.errors.append(
-                (path, f"文件太大（{size / 1048576:.1f} MB），已跳过（上限 "
-                       f"{MAX_FILE_BYTES / 1048576:.0f} MB）"))
+            _use_name(f"文件太大（{size / 1048576:.1f} MB），已跳过（上限 "
+                      f"{MAX_FILE_BYTES / 1048576:.0f} MB）")
             continue
         try:
             with open(path, "rb") as fh:
@@ -332,12 +376,11 @@ def read_paths(paths, *, recursive: bool = True) -> ImportBundle:
             bundle.errors.append((path, str(exc)))
             continue
         if looks_binary(raw):
-            bundle.errors.append(
-                (path, "看起来是二进制文件（Excel / Word / PDF 等暂不支持），"
-                       "请先另存为 txt 或 csv 再导入"))
+            _use_name("是二进制文件（Word / Excel / PDF 等），改为从文件名取学号")
             continue
         data = _decode_bytes(raw)
         if not data.strip():
+            _use_name("文件是空的")
             continue
         bundle.files.append(path)
         total_chars += len(data)

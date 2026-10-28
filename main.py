@@ -83,6 +83,7 @@ class App(tk.Tk):
         self.whitespace_var = tk.BooleanVar(value=True)
         self.halfwidth_var = tk.BooleanVar(value=True)
         self.dedupe_var = tk.BooleanVar(value=False)
+        self.from_names_var = tk.BooleanVar(value=True)
 
         self._setup_style()
         self.title(f"{APP_TITLE} v{APP_VERSION}")
@@ -189,6 +190,14 @@ class App(tk.Tk):
             side="left", padx=(16, 0))
         ttk.Checkbutton(opt_row, text="结果去重（保留首次出现）", variable=self.dedupe_var).pack(
             side="left", padx=(16, 0))
+
+        # 拖入 Word/Excel 作业时，从文件名里取学号
+        name_row = ttk.Frame(box)
+        name_row.grid(row=3, column=0, columnspan=5, sticky="w", pady=(4, 0))
+        ttk.Checkbutton(name_row, text="Word/Excel 作业从文件名取学号",
+                        variable=self.from_names_var).pack(side="left")
+        ttk.Label(name_row, text="（25179704-08-何金森-作业一.doc → 2517970408）",
+                  style="Hint.TLabel").pack(side="left", padx=(6, 0))
 
     def _build_texts(self):
         paned = ttk.Panedwindow(self, orient="horizontal")
@@ -299,6 +308,7 @@ class App(tk.Tk):
         self.whitespace_var.set(bool(cfg.get("remove_whitespace", True)))
         self.halfwidth_var.set(bool(cfg.get("halfwidth", True)))
         self.dedupe_var.set(bool(cfg.get("dedupe", False)))
+        self.from_names_var.set(bool(cfg.get("from_names", True)))
 
     def _save_settings(self):
         cfg = {
@@ -307,6 +317,7 @@ class App(tk.Tk):
             "remove_whitespace": self.whitespace_var.get(),
             "halfwidth": self.halfwidth_var.get(),
             "dedupe": self.dedupe_var.get(),
+            "from_names": self.from_names_var.get(),
         }
         try:
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
@@ -387,23 +398,28 @@ class App(tk.Tk):
         self._load_paths(paths)
 
     def _load_paths(self, paths, *, confirm_replace: bool = True):
-        bundle = read_paths(paths)
-        if not bundle.files:
+        bundle = read_paths(paths, from_names=self.from_names_var.get())
+        if not bundle.text.strip():
             names = "、".join(os.path.basename(str(p)) for p in list(paths)[:3])
-            message = "没有找到可读取的文本文件。"
+            message = "没有找到可读取的学号。"
             if names:
                 message += f"\n\n拖入/选中的是：{names}"
-            message += ("\n\n文件夹里需要放 .txt / .csv / .tsv / .log / .md 等文本文件；"
-                        "Excel / Word / PDF 请先另存为 txt 或 csv（不支持直接读二进制文件）。")
+            message += ("\n\n支持两种方式：\n"
+                        "· 文本文件（.txt / .csv / .tsv / .log / .md）直接读内容；\n"
+                        "· Word / Excel / PDF 等按文件名取学号，如 "
+                        "`25179704-08-何金森-作业一.doc` → `2517970408`"
+                        "（勾选「Word/Excel 作业从文件名取学号」）。")
+            if not self.from_names_var.get():
+                message += "\n\n当前没有勾选「Word/Excel 作业从文件名取学号」。"
             if bundle.errors:
-                message += f"\n\n读取失败 {len(bundle.errors)} 个，第一个原因：{bundle.errors[0][1]}"
+                message += f"\n\n跳过 {len(bundle.errors)} 个，第一个原因：{bundle.errors[0][1]}"
             messagebox.showwarning("导入失败", message)
             return
 
         current = self.in_text.get("1.0", "end-1c")
         if confirm_replace and current.strip():
-            question = (f"输入框里已有内容，要用这 {len(bundle.files)} 个文件"
-                        f"（{bundle.lines} 行）替换吗？")
+            question = (f"输入框里已有内容，要用这次导入的 {bundle.lines} 行"
+                        f"（{bundle.summary()}）替换吗？")
             if not messagebox.askyesno("替换内容", question):
                 return
 
@@ -411,11 +427,14 @@ class App(tk.Tk):
         self.in_text.insert("1.0", bundle.text)
         self.set_status(f"已导入：{bundle.summary()}")
 
-        if bundle.errors:
+        if bundle.names:
+            self.set_status(f"已导入：{bundle.summary()}（其中 {len(bundle.names)} 个学号来自文件名）")
+
+        if bundle.errors and not bundle.files and not bundle.names:
             first_path, reason = bundle.errors[0]
             messagebox.showwarning(
-                "部分文件读取失败",
-                f"共 {len(bundle.errors)} 个文件读取失败，已跳过。\n\n第一个：\n{first_path}\n{reason}")
+                "部分文件已跳过",
+                f"共 {len(bundle.errors)} 个文件没有导入，已跳过。\n\n第一个：\n{first_path}\n{reason}")
 
     def do_copy(self):
         result = self.out_text.get("1.0", "end-1c")
