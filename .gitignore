@@ -1,0 +1,24 @@
+# 虚拟环境与缓存
+.venv/
+__pycache__/
+*.py[cod]
+
+# IDE
+.idea/
+.vscode/
+
+# 运行产物
+settings.json
+.run_tmp/
+build/
+*.spec
+
+# 打包产物（exe 走 GitHub Releases，不进仓库）
+dist/
+
+# 临时文件
+_shot*.py
+_gh_upload.py
+token.txt
+docs/_*
+*.log
