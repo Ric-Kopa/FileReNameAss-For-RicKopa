@@ -29,10 +29,12 @@ import time
 from dataclasses import dataclass, field
 
 #: 版本号（界面标题和“关于”里显示）
-APP_VERSION = "2.5.2"
+APP_VERSION = "2.6"
 
 #: 默认要删除的字符
 DEFAULT_STRIP_CHARS = "-+_"
+# 界面上用勾选框提供的常用分隔符（也可以自己加）
+STRIP_PRESETS = ("-", "+", "_", ".", "/", "\\", "·", ",", "，", "、")
 
 #: 学号里常见、但复制粘贴时容易混进来的不可见字符
 ZERO_WIDTH_CHARS = (

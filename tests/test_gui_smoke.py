@@ -88,6 +88,16 @@ class GuiSmokeTest(unittest.TestCase):
         self.app.halfwidth_var.set(False)
         self.assertEqual(self._fix("２０２４０４０４１"), "２０２４０４０４１")
 
+    def test_strip_presets_and_extra_combine(self):
+        app = self.app
+        app._apply_strip_chars("")
+        self.assertEqual(app._strip_chars(), "")
+        app.strip_presets["_"].set(True)
+        app.strip_presets["."].set(True)
+        app.strip_var.set("@#")
+        self.assertEqual(app._strip_chars(), "_.@#")
+        self.assertEqual(self._fix("2024.0404_1"), "2024040401")
+
     def test_settings_roundtrip(self):
         tests_dir = os.path.dirname(os.path.abspath(__file__))
         path = os.path.join(tests_dir, "_test_settings.json")
@@ -95,17 +105,18 @@ class GuiSmokeTest(unittest.TestCase):
         app_module.SETTINGS_FILE = path
         try:
             self.app.class_var.set("7")
-            self.app.strip_var.set("/.")
+            self.app._apply_strip_chars("/.@")
             self.app.dedupe_var.set(True)
             self.app._save_settings()
+            saved = sorted(self.app._strip_chars())
 
             self.app.class_var.set("4")
-            self.app.strip_var.set("-+_")
+            self.app._apply_strip_chars("-+_")
             self.app.dedupe_var.set(False)
             self.app._load_settings()
 
             self.assertEqual(self.app.class_var.get(), "7")
-            self.assertEqual(self.app.strip_var.get(), "/.")
+            self.assertEqual(sorted(self.app._strip_chars()), saved)   # “/”“.”回填勾选框，“@”回填其他
             self.assertTrue(self.app.dedupe_var.get())
         finally:
             app_module.SETTINGS_FILE = old

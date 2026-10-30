@@ -25,6 +25,7 @@ from student_id_core import (
     NAME_FORMATS,
     NAME_FORMAT_SPLIT,
     NAME_FORMAT_KEEP,
+    STRIP_PRESETS,
     ProcessResult,
     export_files,
     is_valid_class_no,
@@ -87,7 +88,11 @@ class App(tk.Tk):
         self.last_result: ProcessResult | None = None
 
         self.class_var = tk.StringVar(value="4")
-        self.strip_var = tk.StringVar(value=DEFAULT_STRIP_CHARS)
+        # 常用分隔符用勾选框选，勾不中的可以自己填在“其他字符”里
+        self.strip_extra_var = tk.StringVar(value="")
+        self.strip_presets = {
+            ch: tk.BooleanVar(value=ch in DEFAULT_STRIP_CHARS) for ch in STRIP_PRESETS
+        }
         self.whitespace_var = tk.BooleanVar(value=True)
         self.halfwidth_var = tk.BooleanVar(value=True)
         self.dedupe_var = tk.BooleanVar(value=False)
@@ -101,8 +106,8 @@ class App(tk.Tk):
 
         self._setup_style()
         self.title(f"{APP_TITLE} v{APP_VERSION}")
-        self.geometry("1000x680")
-        self.minsize(860, 520)
+        self.geometry("1000x726")
+        self.minsize(860, 560)
         try:
             self.iconbitmap(_resource_path("app-icon.ico"))
         except tk.TclError:
@@ -119,6 +124,7 @@ class App(tk.Tk):
         self._load_settings()
         self.class_var.trace_add("write", lambda *_: self._update_rule_hint())
         self._update_rule_hint()
+        self._update_strip_hint()
         self._center_window()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -173,6 +179,11 @@ class App(tk.Tk):
 
         self.config(menu=menubar)
 
+    @property
+    def strip_var(self):
+        """兼容旧写法：strip_var 就是「其他字符」输入框。"""
+        return self.strip_extra_var
+
     def _build_settings(self):
         box = ttk.LabelFrame(self, text="设置", padding=(10, 6, 10, 8))
         box.pack(fill="x", padx=10, pady=(10, 6))
@@ -189,15 +200,22 @@ class App(tk.Tk):
         ttk.Label(box, text="要删除的字符：").grid(row=1, column=0, sticky="w", pady=(6, 0))
         strip_row = ttk.Frame(box)
         strip_row.grid(row=1, column=1, columnspan=4, sticky="w", pady=(6, 0))
-        ttk.Entry(strip_row, textvariable=self.strip_var, width=18).pack(side="left")
-        ttk.Label(strip_row, text="（可填多个，例如 -+_ 或 /）", style="Hint.TLabel").pack(
-            side="left", padx=(6, 10))
-        ttk.Button(strip_row, text="恢复默认", width=9,
-                   command=self.reset_strip_chars).pack(side="left")
+        for ch, var in self.strip_presets.items():
+            ttk.Checkbutton(strip_row, text=ch, variable=var, width=3,
+                            command=self._update_strip_hint).pack(side="left")
+
+        other_row = ttk.Frame(box)
+        other_row.grid(row=2, column=1, columnspan=4, sticky="w", pady=(4, 0))
+        ttk.Label(other_row, text="其他字符：").pack(side="left")
+        ttk.Entry(other_row, textvariable=self.strip_extra_var, width=10).pack(side="left")
+        ttk.Button(other_row, text="恢复默认", width=9,
+                   command=self.reset_strip_chars).pack(side="left", padx=(6, 0))
+        self.strip_hint = ttk.Label(other_row, text="", style="Hint.TLabel")
+        self.strip_hint.pack(side="left", padx=(8, 0))
 
         # 选项单独一行，避免窗口窄时被裁掉
         opt_row = ttk.Frame(box)
-        opt_row.grid(row=2, column=0, columnspan=5, sticky="w", pady=(6, 0))
+        opt_row.grid(row=3, column=0, columnspan=5, sticky="w", pady=(6, 0))
         ttk.Checkbutton(opt_row, text="删除空格和 Tab", variable=self.whitespace_var).pack(
             side="left")
         ttk.Checkbutton(opt_row, text="全角数字转半角", variable=self.halfwidth_var).pack(
@@ -207,7 +225,7 @@ class App(tk.Tk):
 
         # 拖入 Word/Excel 作业时，从文件名里取学号
         name_row = ttk.Frame(box)
-        name_row.grid(row=3, column=0, columnspan=5, sticky="w", pady=(4, 0))
+        name_row.grid(row=4, column=0, columnspan=5, sticky="w", pady=(4, 0))
         ttk.Checkbutton(name_row, text="Word/Excel 作业从文件名取学号",
                         variable=self.from_names_var).pack(side="left")
         ttk.Label(name_row, text="输出格式：", style="Hint.TLabel").pack(side="left", padx=(14, 4))
@@ -218,7 +236,7 @@ class App(tk.Tk):
 
         # 保存位置：默认存回源文件夹
         save_row = ttk.Frame(box)
-        save_row.grid(row=4, column=0, columnspan=5, sticky="w", pady=(6, 0))
+        save_row.grid(row=5, column=0, columnspan=5, sticky="w", pady=(6, 0))
         ttk.Label(save_row, text="保存到：").pack(side="left")
         ttk.Radiobutton(save_row, text="源文件夹", value="source", variable=self.save_mode_var).pack(
             side="left", padx=(4, 10))
@@ -315,7 +333,10 @@ class App(tk.Tk):
             text=f"规则：不足 10 位的 {class_no}1~{class_no}9 → {class_no}01~{class_no}09，其他不变")
 
     def reset_strip_chars(self):
-        self.strip_var.set(DEFAULT_STRIP_CHARS)
+        for ch, var in self.strip_presets.items():
+            var.set(ch in DEFAULT_STRIP_CHARS)
+        self.strip_extra_var.set("")
+        self._update_strip_hint()
         self.whitespace_var.set(True)
         self.halfwidth_var.set(True)
         self.set_status("已恢复默认删除字符：" + DEFAULT_STRIP_CHARS)
@@ -332,7 +353,7 @@ class App(tk.Tk):
         class_no = str(cfg.get("class_no", "4"))
         if is_valid_class_no(class_no):
             self.class_var.set(class_no)
-        self.strip_var.set(str(cfg.get("strip_chars", DEFAULT_STRIP_CHARS)))
+        self._apply_strip_chars(str(cfg.get("strip_chars", DEFAULT_STRIP_CHARS)))
         self.whitespace_var.set(bool(cfg.get("remove_whitespace", True)))
         self.halfwidth_var.set(bool(cfg.get("halfwidth", True)))
         self.dedupe_var.set(bool(cfg.get("dedupe", False)))
@@ -347,7 +368,9 @@ class App(tk.Tk):
     def _save_settings(self):
         cfg = {
             "class_no": self.class_var.get().strip(),
-            "strip_chars": self.strip_var.get(),
+            "strip_chars": self._strip_chars(),
+            "strip_presets": [ch for ch, var in self.strip_presets.items() if var.get()],
+            "strip_extra": self.strip_extra_var.get(),
             "remove_whitespace": self.whitespace_var.get(),
             "halfwidth": self.halfwidth_var.get(),
             "dedupe": self.dedupe_var.get(),
@@ -362,6 +385,30 @@ class App(tk.Tk):
         except OSError:
             pass
 
+    def _apply_strip_chars(self, chars: str):
+        """把一串字符还原成「勾选框 + 其他」的界面状态。"""
+        presets = set(STRIP_PRESETS)
+        for ch, var in self.strip_presets.items():
+            var.set(ch in chars)
+        self.strip_extra_var.set("".join(ch for ch in chars if ch not in presets))
+        self._update_strip_hint()
+
+    def _strip_chars(self) -> str:
+        """勾选的常用字符 + “其他”里自己填的，去重后按顺序拼起来。"""
+        chosen = [ch for ch, var in self.strip_presets.items() if var.get()]
+        chosen.extend(self.strip_extra_var.get())
+        seen, out = set(), []
+        for ch in chosen:
+            if ch not in seen:
+                seen.add(ch)
+                out.append(ch)
+        return "".join(out)
+
+    def _update_strip_hint(self):
+        chars = self._strip_chars()
+        self.strip_hint.config(
+            text=("当前删除：" + " ".join(chars)) if chars else "当前不删除任何字符")
+
     # ---------- 事件 ----------
     def _read_options(self, *, need_class: bool) -> dict | None:
         class_no = self.class_var.get().strip()
@@ -374,7 +421,7 @@ class App(tk.Tk):
             class_no = "4"
         return {
             "class_no": class_no,
-            "strip_chars": self.strip_var.get(),
+            "strip_chars": self._strip_chars(),
             "halfwidth": self.halfwidth_var.get(),
             "remove_whitespace": self.whitespace_var.get(),
             "dedupe": self.dedupe_var.get(),
@@ -757,8 +804,8 @@ class App(tk.Tk):
             "2. 也可以直接用鼠标把 .txt/.csv 文件、甚至整个文件夹拖进窗口；"
             "文件夹里所有文本文件会按文件名顺序合并导入（文件菜单里也有「导入文件夹」）。\n"
             "3. 需要时修改班级号（默认 4）；已经够 10 位的学号不会被重复补零。\n"
-            "4. 「要删除的字符」里填要去掉的符号，默认 -+_；"
-            "勾选「删除空格/Tab」可去掉空格和制表符。\n"
+            "4. 「要删除的字符」用勾选框选要去掉的符号（默认 - + _），"
+            "不在列表里的填到「其他字符」里；勾「删除空格/Tab」再去掉空格和制表符。\n"
             "5. 点「一键补零」：先删字符，再按规则补 0；"
             "若只想删字符，点「仅清理字符」。\n"
             "6. 拖入作业文件夹时，学号取自文件名，后面的姓名/作业名按「输出格式」保留。\n"
