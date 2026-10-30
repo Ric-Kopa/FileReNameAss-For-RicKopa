@@ -29,7 +29,7 @@ import time
 from dataclasses import dataclass, field
 
 #: 版本号（界面标题和“关于”里显示）
-APP_VERSION = "2.6"
+APP_VERSION = "2.7"
 
 #: 默认要删除的字符
 DEFAULT_STRIP_CHARS = "-+_"
@@ -107,6 +107,63 @@ def clean_line(
 FULL_ID_LENGTH = 10
 
 
+_POSITION_SEP = re.compile(r"[\s,，、;；]+")
+_POSITION_RANGE = re.compile(r"^(\d+)\s*[-~－—]\s*(\d+)$")
+
+
+def parse_positions(spec: str) -> list[int]:
+    """把 ``"3,5-7"`` 这类写法解析成位置列表 ``[3, 5, 6, 7]``（从 1 开始）。
+
+    写错的片段直接忽略；倒着写的范围（7-5）会自动对调。
+    """
+    out: list[int] = []
+    for token in _POSITION_SEP.split(str(spec or "").strip()):
+        if not token:
+            continue
+        match = _POSITION_RANGE.match(token)
+        if match:
+            start, end = int(match.group(1)), int(match.group(2))
+            if start > end:
+                start, end = end, start
+            out.extend(range(start, end + 1))
+            continue
+        if token.isdigit():
+            out.append(int(token))
+    seen, unique = set(), []
+    for pos in out:
+        if pos >= 1 and pos not in seen:
+            seen.add(pos)
+            out_pos = pos
+            unique.append(out_pos)
+    return unique
+
+
+def edit_positions(text: str, *, delete=(),
+                   insert=(), insert_text: str = "0") -> str:
+    """按位置删/插字符（位置从 1 开始，超出长度的忽略）。
+
+    ``delete`` 里列出的位置会被删掉；``insert`` 里的位置会在该字符**前面**插入
+    ``insert_text``（写 ``len+1`` 表示追加到末尾）。两个参数都接受
+    ``parse_positions`` 解析出来的列表。
+    """
+    if not text:
+        return ""
+    drop = set(int(p) for p in delete)
+    add = set(int(p) for p in insert)
+    if not drop and not add:
+        return text
+    pieces: list[str] = []
+    for index, char in enumerate(text, start=1):
+        if index in add:
+            pieces.append(insert_text)
+        if index in drop:
+            continue
+        pieces.append(char)
+    if (len(text) + 1) in add:
+        pieces.append(insert_text)
+    return "".join(pieces)
+
+
 def fix_student_id(s: str, class_no: str = "4") -> str:
     """按规则修复单个学号；不符合规则时原样返回。
 
@@ -177,6 +234,9 @@ def process_text(
     remove_whitespace: bool = True,
     dedupe: bool = False,
     pad: bool = True,
+    pos_delete: str = "",
+    pos_insert: str = "",
+    pos_text: str = "0",
 ) -> ProcessResult:
     """处理整段文本（每行一个学号）。
 
@@ -199,6 +259,14 @@ def process_text(
         )
         result.chars_removed += removed
 
+        if pos_delete or pos_insert:
+            cleaned = edit_positions(
+                cleaned,
+                delete=parse_positions(pos_delete),
+                insert=parse_positions(pos_insert),
+                insert_text=pos_text if pos_text else "0",
+            )
+
         if not cleaned:
             result.emptied += 1
             continue
@@ -211,6 +279,15 @@ def process_text(
             original = remove_invisible((raw or "").strip())
             if halfwidth:
                 original = normalize_width(original)
+            if pos_delete or pos_insert:
+                # 「202404041 张三」这类行：按位置增删也作用在整行上
+                original = edit_positions(
+                    original,
+                    delete=parse_positions(pos_delete),
+                    insert=parse_positions(pos_insert),
+                    insert_text=pos_text if pos_text else "0",
+                )
+                cleaned = original
             final = rewrite_leading_id(original, class_no) if pad else None
             if final is None:
                 result.invalid.append((lineno, cleaned))

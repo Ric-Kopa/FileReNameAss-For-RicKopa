@@ -12,7 +12,9 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from student_id_core import (
+    edit_positions,
     export_files,
+    parse_positions,
     plan_renames,  # noqa: E402
     DEFAULT_STRIP_CHARS,
     NAME_FORMAT_KEEP,
@@ -526,3 +528,41 @@ class ExportFailureTest(unittest.TestCase):
         os.makedirs(os.path.join(out, "2517970408 何金森 作业一.doc"))
         done = export_files([(self.src, "2517970408 何金森 作业一.doc")], out)
         self.assertEqual(os.path.basename(done[0][1]), "2517970408 何金森 作业一 (2).doc")
+
+
+class PositionEditTest(unittest.TestCase):
+    """按位置删字符 / 插字符。"""
+
+    def test_parse_simple_and_ranges(self):
+        self.assertEqual(parse_positions("3,5-7"), [3, 5, 6, 7])
+        self.assertEqual(parse_positions("3 5 7"), [3, 5, 7])
+        self.assertEqual(parse_positions("7-5"), [5, 6, 7])
+        self.assertEqual(parse_positions("3,,3,1"), [3, 1])
+        self.assertEqual(parse_positions("abc,-,0"), [])
+
+    def test_delete_positions(self):
+        self.assertEqual(edit_positions("2024-0404-1", delete=[5]), "20240404-1")
+        self.assertEqual(edit_positions("202404041", delete=[1, 2]), "2404041")
+        self.assertEqual(edit_positions("202404041", delete=[99]), "202404041")
+
+    def test_insert_positions(self):
+        self.assertEqual(
+            edit_positions("202404041", insert=[4], insert_text="0"), "2020404041")
+        self.assertEqual(
+            edit_positions("202404041", insert=[10], insert_text="X"), "202404041X")
+        self.assertEqual(edit_positions("202404041", insert=[1], insert_text="9"),
+                         "9202404041")
+
+    def test_empty_text(self):
+        self.assertEqual(edit_positions("", delete=[1], insert=[1]), "")
+
+    def test_process_text_applies_positions_before_padding(self):
+        # 先清理成 202404041，删掉第 5 位（0）后是 20244041，再补零成 202440401
+        result = process_text("2024-0404-1", pos_delete="5")
+        self.assertEqual(result.lines, ["202440401"])
+        result = process_text("202404041", pos_insert="10", pos_text="X")
+        self.assertEqual(result.lines[0][-1], "X")
+
+    def test_invalid_position_spec_is_ignored(self):
+        result = process_text("2024-0404-1", pos_delete="abc")
+        self.assertEqual(result.lines, ["2024040401"])

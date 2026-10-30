@@ -90,6 +90,9 @@ class App(tk.Tk):
         self.class_var = tk.StringVar(value="4")
         # 常用分隔符用勾选框选，勾不中的可以自己填在“其他字符”里
         self.strip_extra_var = tk.StringVar(value="")
+        self.pos_delete_var = tk.StringVar(value="")
+        self.pos_insert_var = tk.StringVar(value="")
+        self.pos_text_var = tk.StringVar(value="0")
         self.strip_presets = {
             ch: tk.BooleanVar(value=ch in DEFAULT_STRIP_CHARS) for ch in STRIP_PRESETS
         }
@@ -213,9 +216,26 @@ class App(tk.Tk):
         self.strip_hint = ttk.Label(other_row, text="", style="Hint.TLabel")
         self.strip_hint.pack(side="left", padx=(8, 0))
 
+        # 按位置删/插（例如删第 3 位、把 0 插到第 4 位）
+        pos_row = ttk.Frame(box)
+        pos_row.grid(row=3, column=0, columnspan=5, sticky="w", pady=(4, 0))
+        ttk.Label(pos_row, text="按位置：").pack(side="left")
+        ttk.Label(pos_row, text="删除第").pack(side="left", padx=(4, 2))
+        self.pos_del_entry = ttk.Entry(pos_row, textvariable=self.pos_delete_var, width=9)
+        self.pos_del_entry.pack(side="left")
+        ttk.Label(pos_row, text="位").pack(side="left", padx=(2, 10))
+        ttk.Label(pos_row, text="在第").pack(side="left")
+        self.pos_ins_entry = ttk.Entry(pos_row, textvariable=self.pos_insert_var, width=6)
+        self.pos_ins_entry.pack(side="left", padx=(2, 2))
+        ttk.Label(pos_row, text="位插入").pack(side="left")
+        self.pos_text_entry = ttk.Entry(pos_row, textvariable=self.pos_text_var, width=4)
+        self.pos_text_entry.pack(side="left", padx=(2, 4))
+        ttk.Label(pos_row, text="（从 1 数，可写 3,5-7；留空不启用）",
+                  style="Hint.TLabel").pack(side="left")
+
         # 选项单独一行，避免窗口窄时被裁掉
         opt_row = ttk.Frame(box)
-        opt_row.grid(row=3, column=0, columnspan=5, sticky="w", pady=(6, 0))
+        opt_row.grid(row=4, column=0, columnspan=5, sticky="w", pady=(6, 0))
         ttk.Checkbutton(opt_row, text="删除空格和 Tab", variable=self.whitespace_var).pack(
             side="left")
         ttk.Checkbutton(opt_row, text="全角数字转半角", variable=self.halfwidth_var).pack(
@@ -225,7 +245,7 @@ class App(tk.Tk):
 
         # 拖入 Word/Excel 作业时，从文件名里取学号
         name_row = ttk.Frame(box)
-        name_row.grid(row=4, column=0, columnspan=5, sticky="w", pady=(4, 0))
+        name_row.grid(row=5, column=0, columnspan=5, sticky="w", pady=(4, 0))
         ttk.Checkbutton(name_row, text="Word/Excel 作业从文件名取学号",
                         variable=self.from_names_var).pack(side="left")
         ttk.Label(name_row, text="输出格式：", style="Hint.TLabel").pack(side="left", padx=(14, 4))
@@ -236,7 +256,7 @@ class App(tk.Tk):
 
         # 保存位置：默认存回源文件夹
         save_row = ttk.Frame(box)
-        save_row.grid(row=5, column=0, columnspan=5, sticky="w", pady=(6, 0))
+        save_row.grid(row=6, column=0, columnspan=5, sticky="w", pady=(6, 0))
         ttk.Label(save_row, text="保存到：").pack(side="left")
         ttk.Radiobutton(save_row, text="源文件夹", value="source", variable=self.save_mode_var).pack(
             side="left", padx=(4, 10))
@@ -336,6 +356,9 @@ class App(tk.Tk):
         for ch, var in self.strip_presets.items():
             var.set(ch in DEFAULT_STRIP_CHARS)
         self.strip_extra_var.set("")
+        self.pos_delete_var.set("")
+        self.pos_insert_var.set("")
+        self.pos_text_var.set("0")
         self._update_strip_hint()
         self.whitespace_var.set(True)
         self.halfwidth_var.set(True)
@@ -362,6 +385,9 @@ class App(tk.Tk):
         labels = {code: label for code, label in NAME_FORMATS}
         if fmt in labels:
             self.name_format_var.set(labels[fmt])
+        self.pos_delete_var.set(str(cfg.get("pos_delete", "")))
+        self.pos_insert_var.set(str(cfg.get("pos_insert", "")))
+        self.pos_text_var.set(str(cfg.get("pos_text", "0")) or "0")
         if cfg.get("save_mode") in ("source", "subfolder", "choose"):
             self.save_mode_var.set(cfg["save_mode"])
 
@@ -371,6 +397,9 @@ class App(tk.Tk):
             "strip_chars": self._strip_chars(),
             "strip_presets": [ch for ch, var in self.strip_presets.items() if var.get()],
             "strip_extra": self.strip_extra_var.get(),
+            "pos_delete": self.pos_delete_var.get(),
+            "pos_insert": self.pos_insert_var.get(),
+            "pos_text": self.pos_text_var.get(),
             "remove_whitespace": self.whitespace_var.get(),
             "halfwidth": self.halfwidth_var.get(),
             "dedupe": self.dedupe_var.get(),
@@ -425,6 +454,9 @@ class App(tk.Tk):
             "halfwidth": self.halfwidth_var.get(),
             "remove_whitespace": self.whitespace_var.get(),
             "dedupe": self.dedupe_var.get(),
+            "pos_delete": self.pos_delete_var.get(),
+            "pos_insert": self.pos_insert_var.get(),
+            "pos_text": self.pos_text_var.get() or "0",
         }
 
     def do_fix(self):
@@ -806,11 +838,13 @@ class App(tk.Tk):
             "3. 需要时修改班级号（默认 4）；已经够 10 位的学号不会被重复补零。\n"
             "4. 「要删除的字符」用勾选框选要去掉的符号（默认 - + _），"
             "不在列表里的填到「其他字符」里；勾「删除空格/Tab」再去掉空格和制表符。\n"
-            "5. 点「一键补零」：先删字符，再按规则补 0；"
+            "5. 「按位置」可以按第几位删字符、或把字符插到第几位（从 1 数，"
+            "支持 3,5-7 这种写法，留空就不启用；插在第 10 位等于加到末尾）。\n"
+            "6. 点「一键补零」：先删字符、再按位置增删，最后按规则补 0；"
             "若只想删字符，点「仅清理字符」。\n"
-            "6. 拖入作业文件夹时，学号取自文件名，后面的姓名/作业名按「输出格式」保留。\n"
-            "7. 「保存到」默认存回源文件夹；也可建「已处理」子文件夹或每次选择。\n"
-            "8. 右侧结果可复制或保存（Ctrl+Shift+C / Ctrl+S）。\n\n"
+            "7. 拖入作业文件夹时，学号取自文件名，后面的姓名/作业名按「输出格式」保留。\n"
+            "8. 「保存到」默认存回源文件夹；也可建「已处理」子文件夹或每次选择。\n"
+            "9. 右侧结果可复制或保存（Ctrl+Shift+C / Ctrl+S）。\n\n"
             "示例：2024-0404-1 → 202404041 → 2024040401")
 
     def show_about(self):

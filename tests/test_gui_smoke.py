@@ -207,6 +207,37 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class PositionSettingsTest(unittest.TestCase):
+    """设置区的「按位置」两个输入框要能影响处理结果。"""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            cls.app = app_module.App()
+        except tk.TclError:
+            raise unittest.SkipTest("没有可用的 Tk 显示")
+        cls.app.withdraw()
+        cls.app.on_close = lambda *a, **k: None
+        cls.app.drop_target.close()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.app.destroy()
+
+    def tearDown(self):
+        self.app.pos_delete_var.set("")
+        self.app.pos_insert_var.set("")
+        self.app.pos_text_var.set("0")
+
+    def test_position_entries_apply(self):
+        self.app.pos_delete_var.set("5")
+        self.app.pos_insert_var.set("1")
+        self.app.pos_text_var.set("9")
+        self.app.class_var.set("4")
+        self.app._run("2024-0404-1", pad=True, **self.app._read_options(need_class=True))
+        self.assertEqual(self.app.out_text.get("1.0", "end-1c"), "9202440401")
+
+
 class ExportFlowTest(unittest.TestCase):
     """“保存/导出”对话框与导出重命名后的文件。"""
 
